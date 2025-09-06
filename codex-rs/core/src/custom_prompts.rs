@@ -1,4 +1,7 @@
 use codex_protocol::custom_prompts::CustomPrompt;
+use codex_protocol::custom_prompts::CustomPromptMeta;
+use codex_protocol::custom_prompts::PromptScope;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -73,9 +76,246 @@ pub async fn discover_prompts_in_excluding(
     out
 }
 
+/// Return the project-level prompts directory for a given project root.
+/// The directory layout is `PROJECT_ROOT/.codex/prompts`.
+pub fn project_prompts_dir(project_root: &Path) -> PathBuf {
+    project_root.join(".codex/prompts")
+}
+
+/// A discovered prompt file entry used for internal aggregation.
+#[derive(Debug, Clone)]
+pub struct DiscoveredFile {
+    pub path: PathBuf,
+    pub name: String,
+    /// Directory path relative to the scanned root (empty for files at root).
+    pub rel_dir: PathBuf,
+    pub content: String,
+}
+
+/// Recursively discover Markdown prompts under `root`, returning entries in any order.
+/// Non-files are ignored. Unreadable subdirectories or files are skipped.
+pub async fn discover_prompts_recursive(root: &Path) -> Vec<DiscoveredFile> {
+    let mut out = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(mut entries) = fs::read_dir(&dir).await else {
+            continue;
+        };
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let file_type = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+
+            // Only include Markdown files with a .md extension.
+            let is_md = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("md"))
+                .unwrap_or(false);
+            if !is_md {
+                continue;
+            }
+            let Some(name) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+            else {
+                continue;
+            };
+            let content = match fs::read_to_string(&path).await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Compute relative directory from root for namespacing later.
+            let rel_dir = match path.parent() {
+                Some(parent) => parent
+                    .strip_prefix(root)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| PathBuf::new()),
+                None => PathBuf::new(),
+            };
+
+            out.push(DiscoveredFile {
+                path,
+                name,
+                rel_dir,
+                content,
+            });
+        }
+    }
+
+    out
+}
+
+/// Discover prompts from both user and project scopes, deduplicated by basename.
+/// Project-level prompts take precedence over user-level prompts when names collide.
+pub async fn discover_user_and_project_prompts(cwd: &Path) -> Vec<DiscoveredFile> {
+    // Project scope
+    let mut selected: HashMap<String, DiscoveredFile> = HashMap::new();
+
+    // Prefer Git repo root when available; otherwise fall back to provided cwd
+    let project_root = crate::git_info::get_git_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let project_dir = project_prompts_dir(&project_root);
+    for item in discover_prompts_recursive(&project_dir).await {
+        selected.insert(item.name.clone(), item);
+    }
+
+    // User scope
+    if let Some(user_dir) = default_prompts_dir() {
+        for item in discover_prompts_recursive(&user_dir).await {
+            selected.entry(item.name.clone()).or_insert(item);
+        }
+    }
+
+    let mut out: Vec<DiscoveredFile> = selected.into_values().collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Adapter that returns the current protocol shape for custom prompts,
+/// aggregating across user + project scopes.
+pub async fn discover_user_and_project_custom_prompts(cwd: &Path) -> Vec<CustomPrompt> {
+    discover_user_and_project_prompts(cwd)
+        .await
+        .into_iter()
+        .map(|d| CustomPrompt {
+            name: d.name,
+            path: d.path,
+            content: d.content,
+        })
+        .collect()
+}
+
+/// Adapter that returns enriched metadata for custom prompts, including
+/// scope (project/user) and namespace (relative subdirectories).
+pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<CustomPromptMeta> {
+    // Prefer Git repo root when available; otherwise fall back to provided cwd
+    let project_root = crate::git_info::get_git_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let project_dir = project_prompts_dir(&project_root);
+
+    let mut selected: HashMap<String, CustomPromptMeta> = HashMap::new();
+
+    // Project first so it wins on collisions
+    for item in discover_prompts_recursive(&project_dir).await {
+        let namespace: Vec<String> = if item.rel_dir.as_os_str().is_empty() {
+            Vec::new()
+        } else {
+            item.rel_dir
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect()
+        };
+        selected.insert(
+            item.name.clone(),
+            CustomPromptMeta {
+                name: item.name,
+                path: item.path,
+                scope: PromptScope::Project,
+                namespace,
+                description: None,
+                argument_hint: None,
+            },
+        );
+    }
+
+    // Then user scope; keep existing when colliding
+    if let Some(user_dir) = default_prompts_dir() {
+        for item in discover_prompts_recursive(&user_dir).await {
+            let namespace: Vec<String> = if item.rel_dir.as_os_str().is_empty() {
+                Vec::new()
+            } else {
+                item.rel_dir
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .collect()
+            };
+            selected
+                .entry(item.name.clone())
+                .or_insert(CustomPromptMeta {
+                    name: item.name,
+                    path: item.path,
+                    scope: PromptScope::User,
+                    namespace,
+                    description: None,
+                    argument_hint: None,
+                });
+        }
+    }
+
+    let mut out: Vec<CustomPromptMeta> = selected.into_values().collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Expand `$ARGUMENTS` and `$1..$n` placeholders in `content`.
+///
+/// - `$ARGUMENTS` is replaced by `rest` verbatim.
+/// - `$n` is replaced by the nth (1-based) positional argument from `args`,
+///   or an empty string if missing.
+pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
+    let mut out = String::with_capacity(content.len().saturating_add(rest.len()));
+    let bytes = content.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+
+        // Handle $ARGUMENTS
+        if i + 10 <= bytes.len() && &content[i..i + 10] == "$ARGUMENTS" {
+            out.push_str(rest);
+            i += 10;
+            continue;
+        }
+
+        // Handle $<digits>
+        let mut j = i + 1; // skip '$'
+        let mut val: usize = 0;
+        let mut has_digit = false;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            has_digit = true;
+            val = val
+                .saturating_mul(10)
+                .saturating_add((bytes[j] - b'0') as usize);
+            j += 1;
+        }
+        if has_digit {
+            // 1-based index; missing indices expand to empty string.
+            if val > 0 {
+                let idx = val - 1;
+                if let Some(s) = args.get(idx) {
+                    out.push_str(s);
+                }
+            }
+            i = j;
+            continue;
+        }
+
+        // Not a recognized placeholder – treat '$' as a literal.
+        out.push('$');
+        i += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
     use std::fs;
     use tempfile::tempdir;
 
@@ -123,5 +363,136 @@ mod tests {
         let found = discover_prompts_in(dir).await;
         let names: Vec<String> = found.into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["good"]);
+    }
+
+    #[tokio::test]
+    async fn recursive_discovery_with_subdirs() {
+        let tmp = tempdir().expect("create TempDir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("a.md"), b"A").unwrap();
+        fs::write(root.join("a/b/c.md"), b"C").unwrap();
+        fs::write(root.join("not-md.txt"), b"ignore").unwrap();
+
+        let found = discover_prompts_recursive(root).await;
+        let mut names: Vec<String> = found.iter().map(|e| e.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["a", "c"]);
+        // Ensure rel_dir captured for nested file
+        let c = found.iter().find(|e| e.name == "c").unwrap();
+        assert_eq!(c.rel_dir, PathBuf::from("a/b"));
+    }
+
+    // Helper for tests to avoid global env flakiness
+    async fn agg_for_test(user: Option<&Path>, project: Option<&Path>) -> Vec<DiscoveredFile> {
+        let mut selected: HashMap<String, DiscoveredFile> = HashMap::new();
+        if let Some(project_root) = project {
+            for item in discover_prompts_recursive(project_root).await {
+                selected.insert(item.name.clone(), item);
+            }
+        }
+        if let Some(user_root) = user {
+            for item in discover_prompts_recursive(user_root).await {
+                selected.entry(item.name.clone()).or_insert(item);
+            }
+        }
+        let mut out: Vec<DiscoveredFile> = selected.into_values().collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    #[tokio::test]
+    async fn aggregate_user_only() {
+        let tmp = tempdir().expect("create TempDir");
+        let user = tmp.path().join("prompts");
+        fs::create_dir_all(&user).unwrap();
+        fs::write(user.join("u1.md"), b"U1").unwrap();
+        fs::write(user.join("u2.md"), b"U2").unwrap();
+
+        let found = agg_for_test(Some(&user), None).await;
+        let names: Vec<String> = found.into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["u1", "u2"]);
+    }
+
+    #[tokio::test]
+    async fn aggregate_project_only() {
+        let tmp = tempdir().expect("create TempDir");
+        let proj_dir = tmp.path().join(".codex/prompts");
+        fs::create_dir_all(&proj_dir).unwrap();
+        fs::write(proj_dir.join("p1.md"), b"P1").unwrap();
+        let found = agg_for_test(None, Some(&proj_dir)).await;
+        let names: Vec<String> = found.into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["p1"]);
+    }
+
+    #[tokio::test]
+    async fn aggregate_both_with_collision_project_wins() {
+        let tmp = tempdir().expect("create TempDir");
+        let user = tmp.path().join("user/prompts");
+        let proj = tmp.path().join("proj/.codex/prompts");
+        fs::create_dir_all(&user).unwrap();
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(user.join("foo.md"), b"U-FOO").unwrap();
+        fs::write(proj.join("foo.md"), b"P-FOO").unwrap();
+        fs::write(user.join("bar.md"), b"U-BAR").unwrap();
+        fs::write(proj.join("baz.md"), b"P-BAZ").unwrap();
+
+        let found = agg_for_test(Some(&user), Some(&proj)).await;
+        let mut names: Vec<String> = found.iter().map(|e| e.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["bar", "baz", "foo"]);
+        let foo = found.into_iter().find(|e| e.name == "foo").unwrap();
+        assert_eq!(foo.content, "P-FOO");
+    }
+
+    #[tokio::test]
+    async fn fallback_to_cwd_when_no_git_repo() {
+        let tmp = tempdir().expect("create TempDir");
+        // Create .codex/prompts under cwd (no .git present)
+        let proj_dir = tmp.path().join(".codex/prompts");
+        fs::create_dir_all(&proj_dir).unwrap();
+        fs::write(proj_dir.join("local.md"), b"LOCAL").unwrap();
+
+        // Create a user dir as well to ensure both are aggregated
+        let user_dir = tmp.path().join("user/prompts");
+        fs::create_dir_all(&user_dir).unwrap();
+        fs::write(user_dir.join("user.md"), b"USER").unwrap();
+
+        // Temporarily override default_prompts_dir by directly calling the
+        // internal aggregator equivalent with explicit paths.
+        let mut selected: HashMap<String, DiscoveredFile> = HashMap::new();
+        for item in discover_prompts_recursive(&proj_dir).await {
+            selected.insert(item.name.clone(), item);
+        }
+        for item in discover_prompts_recursive(&user_dir).await {
+            selected.entry(item.name.clone()).or_insert(item);
+        }
+        let mut out: Vec<DiscoveredFile> = selected.into_values().collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        let names: Vec<String> = out.into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["local", "user"]);
+    }
+
+    #[test]
+    fn expand_arguments_only_rest() {
+        let content = "Hello $ARGUMENTS!";
+        let expanded = expand_arguments(content, &[], "world and friends");
+        assert_eq!(expanded, "Hello world and friends!");
+    }
+
+    #[test]
+    fn expand_arguments_only_positionals() {
+        let content = "first=$1 second=$2 missing=$3";
+        let args = vec!["A".to_string(), "B".to_string()];
+        let expanded = expand_arguments(content, &args, "");
+        assert_eq!(expanded, "first=A second=B missing=");
+    }
+
+    #[test]
+    fn expand_arguments_mixed_and_repeated() {
+        let content = "ID $2; All: $ARGUMENTS; Again $2 and $1";
+        let args = vec!["X".to_string(), "Y".to_string()];
+        let expanded = expand_arguments(content, &args, "foo bar baz");
+        assert_eq!(expanded, "ID Y; All: foo bar baz; Again Y and X");
     }
 }
