@@ -45,6 +45,7 @@ use crate::config::Config;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
 use crate::conversation_manager::InitialHistory;
+use crate::custom_prompts::expand_arguments;
 use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
@@ -1279,20 +1280,56 @@ async fn submission_loop(
                 let sub_id = sub.id.clone();
 
                 let custom_prompts: Vec<CustomPrompt> =
-                    if let Some(dir) = crate::custom_prompts::default_prompts_dir() {
-                        crate::custom_prompts::discover_prompts_in(&dir).await
-                    } else {
-                        Vec::new()
-                    };
+                    crate::custom_prompts::discover_user_and_project_custom_prompts(
+                        &turn_context.cwd,
+                    )
+                    .await;
+                let custom_prompts_meta =
+                    crate::custom_prompts::discover_user_and_project_custom_prompt_meta(
+                        &turn_context.cwd,
+                    )
+                    .await;
 
                 let event = Event {
                     id: sub_id,
                     msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
                         custom_prompts,
+                        custom_prompts_meta,
                     }),
                 };
                 if let Err(e) = tx_event.send(event).await {
                     warn!("failed to send ListCustomPromptsResponse event: {e}");
+                }
+            }
+            Op::RunCustomPrompt { path, args, rest } => {
+                let mut items: Vec<InputItem> = Vec::new();
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(content) => {
+                        let expanded = expand_arguments(&content, &args, &rest);
+                        items.push(InputItem::Text { text: expanded });
+                    }
+                    Err(e) => {
+                        let event = Event {
+                            id: sub.id,
+                            msg: EventMsg::Error(ErrorEvent {
+                                message: format!(
+                                    "failed to read custom prompt '{}': {e}",
+                                    path.display()
+                                ),
+                            }),
+                        };
+                        if let Err(e) = sess.tx_event.send(event).await {
+                            warn!("failed to send Error event for RunCustomPrompt: {e}");
+                        }
+                        continue;
+                    }
+                }
+
+                // Attempt to inject input into current task; otherwise spawn a new one.
+                if let Err(items) = sess.inject_input(items) {
+                    let task =
+                        AgentTask::spawn(sess.clone(), Arc::clone(&turn_context), sub.id, items);
+                    sess.set_task(task);
                 }
             }
             Op::Compact => {

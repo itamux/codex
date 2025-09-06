@@ -28,7 +28,9 @@ use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::slash_command::SlashCommand;
+use codex_core::protocol::Op;
 use codex_protocol::custom_prompts::CustomPrompt;
+use codex_protocol::custom_prompts::CustomPromptMeta;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -90,6 +92,7 @@ pub(crate) struct ChatComposer {
     // When true, disables paste-burst logic and inserts characters immediately.
     disable_paste_burst: bool,
     custom_prompts: Vec<CustomPrompt>,
+    custom_prompts_meta: HashMap<String, CustomPromptMeta>,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -128,6 +131,7 @@ impl ChatComposer {
             paste_burst: PasteBurst::default(),
             disable_paste_burst: false,
             custom_prompts: Vec::new(),
+            custom_prompts_meta: HashMap::new(),
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -413,26 +417,97 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                if let Some(sel) = popup.selected_item() {
-                    // Clear textarea so no residual text remains.
-                    self.textarea.set_text("");
-                    // Capture any needed data from popup before clearing it.
-                    let prompt_content = match sel {
-                        CommandItem::UserPrompt(idx) => {
-                            popup.prompt_content(idx).map(|s| s.to_string())
-                        }
+                // Capture first line before borrowing popup to avoid borrow conflicts.
+                let first_line_owned: String = self
+                    .textarea
+                    .text()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+
+                // Gather selection and path while borrowing popup, then drop the borrow.
+                let (selected, selected_path): (Option<CommandItem>, Option<std::path::PathBuf>) = {
+                    let sel = popup.selected_item();
+                    let path = match sel {
+                        Some(CommandItem::UserPrompt(idx)) => popup.prompt_path(idx),
                         _ => None,
                     };
-                    // Hide popup since an action has been dispatched.
+                    (sel, path)
+                };
+
+                if let Some(sel) = selected {
+                    // Now it is safe to mutate `self` again.
+                    self.textarea.set_text("");
                     self.active_popup = ActivePopup::None;
 
                     match sel {
                         CommandItem::Builtin(cmd) => {
+                            if let Some(stripped) = first_line_owned.strip_prefix('/') {
+                                let token = stripped.trim_start();
+                                let mut parts = token.splitn(2, char::is_whitespace);
+                                let cmd_name = parts.next().unwrap_or("");
+                                let remainder = parts.next().unwrap_or("").trim().to_string();
+                                if !remainder.is_empty() && cmd_name == cmd.command() {
+                                    let line: Line<'static> = vec![
+                                        "Running ".dim(),
+                                        format!("/{cmd_name}").bold(),
+                                        " with ".dim(),
+                                        remainder.into(),
+                                    ]
+                                    .into();
+                                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                        crate::history_cell::new_user_approval_decision(vec![line]),
+                                    )));
+                                }
+                            }
                             return (InputResult::Command(cmd), true);
                         }
                         CommandItem::UserPrompt(_) => {
-                            if let Some(contents) = prompt_content {
-                                return (InputResult::Submitted(contents), true);
+                            // Parse `/name ...` into args/rest.
+                            let (args, rest) =
+                                if let Some(stripped) = first_line_owned.strip_prefix('/') {
+                                    let token = stripped.trim_start();
+                                    let mut parts = token.splitn(2, char::is_whitespace);
+                                    let _cmd_name = parts.next().unwrap_or("");
+                                    let remainder = parts.next().unwrap_or("").trim().to_string();
+                                    let args: Vec<String> = if remainder.is_empty() {
+                                        Vec::new()
+                                    } else {
+                                        remainder.split_whitespace().map(str::to_owned).collect()
+                                    };
+                                    (args, remainder)
+                                } else {
+                                    (Vec::new(), String::new())
+                                };
+
+                            // If parameters were provided, log a status line.
+                            if !rest.is_empty()
+                                && let Some(stripped) = first_line_owned.strip_prefix('/')
+                            {
+                                let token = stripped.trim_start();
+                                let cmd_name = token.split_whitespace().next().unwrap_or("");
+                                if !cmd_name.is_empty() {
+                                    let line: Line<'static> = vec![
+                                        "Running ".dim(),
+                                        format!("/{cmd_name}").bold(),
+                                        " with ".dim(),
+                                        rest.clone().into(),
+                                    ]
+                                    .into();
+                                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                        crate::history_cell::new_user_approval_decision(vec![line]),
+                                    )));
+                                }
+                            }
+
+                            if let Some(path) = selected_path {
+                                self.app_event_tx
+                                    .send(AppEvent::CodexOp(Op::RunCustomPrompt {
+                                        path,
+                                        args,
+                                        rest,
+                                    }));
                             }
                             return (InputResult::None, true);
                         }
@@ -1155,7 +1230,10 @@ impl ChatComposer {
             }
             _ => {
                 if input_starts_with_slash {
-                    let mut command_popup = CommandPopup::new(self.custom_prompts.clone());
+                    let mut command_popup = CommandPopup::new(
+                        self.custom_prompts.clone(),
+                        self.custom_prompts_meta.clone(),
+                    );
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                 }
@@ -1167,6 +1245,13 @@ impl ChatComposer {
         self.custom_prompts = prompts.clone();
         if let ActivePopup::Command(popup) = &mut self.active_popup {
             popup.set_prompts(prompts);
+        }
+    }
+
+    pub(crate) fn set_custom_prompts_meta(&mut self, meta: HashMap<String, CustomPromptMeta>) {
+        self.custom_prompts_meta = meta.clone();
+        if let ActivePopup::Command(popup) = &mut self.active_popup {
+            popup.set_prompt_meta(meta);
         }
     }
 
@@ -2226,10 +2311,10 @@ mod tests {
     }
 
     #[test]
-    fn selecting_custom_prompt_submits_file_contents() {
+    fn selecting_custom_prompt_dispatches_run_custom_prompt() {
         let prompt_text = "Hello from saved prompt";
 
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(
             true,
@@ -2240,9 +2325,10 @@ mod tests {
         );
 
         // Inject prompts as if received via event.
+        let prompt_path: PathBuf = "/tmp/my-prompt.md".into();
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
-            path: "/tmp/my-prompt.md".to_string().into(),
+            path: prompt_path.clone(),
             content: prompt_text.to_string(),
         }]);
 
@@ -2251,10 +2337,19 @@ mod tests {
             &['/', 'm', 'y', '-', 'p', 'r', 'o', 'm', 'p', 't'],
         );
 
-        let (result, _needs_redraw) =
+        let (_result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(InputResult::Submitted(prompt_text.to_string()), result);
+        // Expect a CodexOp with RunCustomPrompt and no args/rest.
+        let evt = rx.try_recv().expect("AppEvent should be sent");
+        match evt {
+            AppEvent::CodexOp(codex_core::protocol::Op::RunCustomPrompt { path, args, rest }) => {
+                assert_eq!(path, prompt_path);
+                assert!(args.is_empty());
+                assert_eq!(rest, "");
+            }
+            other => panic!("Unexpected event: {other:?}"),
+        }
     }
 
     #[test]
