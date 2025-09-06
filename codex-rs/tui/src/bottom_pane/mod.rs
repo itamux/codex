@@ -40,6 +40,7 @@ use codex_protocol::custom_prompts::CustomPrompt;
 
 use crate::status_indicator_widget::StatusIndicatorWidget;
 use approval_modal_view::ApprovalModalView;
+use codex_protocol::custom_prompts::CustomPromptMeta;
 pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
 
@@ -64,6 +65,8 @@ pub(crate) struct BottomPane {
     status: Option<StatusIndicatorWidget>,
     /// Queued user messages to show under the status indicator.
     queued_user_messages: Vec<String>,
+    /// Enriched metadata for custom prompts, keyed by prompt name.
+    custom_prompt_meta: std::collections::HashMap<String, CustomPromptMeta>,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -96,6 +99,7 @@ impl BottomPane {
             status: None,
             queued_user_messages: Vec::new(),
             esc_backtrack_hint: false,
+            custom_prompt_meta: std::collections::HashMap::new(),
         }
     }
 
@@ -338,6 +342,16 @@ impl BottomPane {
     /// Update custom prompts available for the slash popup.
     pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
         self.composer.set_custom_prompts(prompts);
+        self.request_redraw();
+    }
+
+    /// Update metadata for custom prompts (scope/namespace tags for UI).
+    pub(crate) fn set_custom_prompts_meta(
+        &mut self,
+        meta: std::collections::HashMap<String, CustomPromptMeta>,
+    ) {
+        self.custom_prompt_meta = meta.clone();
+        self.composer.set_custom_prompts_meta(meta);
         self.request_redraw();
     }
 

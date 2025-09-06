@@ -10,6 +10,8 @@ use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
 use codex_common::fuzzy_match::fuzzy_match;
 use codex_protocol::custom_prompts::CustomPrompt;
+use codex_protocol::custom_prompts::CustomPromptMeta;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 /// A selectable item in the popup: either a built-in command or a user prompt.
@@ -24,11 +26,15 @@ pub(crate) struct CommandPopup {
     command_filter: String,
     builtins: Vec<(&'static str, SlashCommand)>,
     prompts: Vec<CustomPrompt>,
+    prompt_meta_by_name: HashMap<String, CustomPromptMeta>,
     state: ScrollState,
 }
 
 impl CommandPopup {
-    pub(crate) fn new(mut prompts: Vec<CustomPrompt>) -> Self {
+    pub(crate) fn new(
+        mut prompts: Vec<CustomPrompt>,
+        prompt_meta_by_name: HashMap<String, CustomPromptMeta>,
+    ) -> Self {
         let builtins = built_in_slash_commands();
         // Exclude prompts that collide with builtin command names and sort by name.
         let exclude: HashSet<String> = builtins.iter().map(|(n, _)| (*n).to_string()).collect();
@@ -38,6 +44,7 @@ impl CommandPopup {
             command_filter: String::new(),
             builtins,
             prompts,
+            prompt_meta_by_name,
             state: ScrollState::new(),
         }
     }
@@ -53,12 +60,25 @@ impl CommandPopup {
         self.prompts = prompts;
     }
 
+    pub(crate) fn set_prompt_meta(&mut self, meta: HashMap<String, CustomPromptMeta>) {
+        self.prompt_meta_by_name = meta;
+    }
+
     pub(crate) fn prompt_name(&self, idx: usize) -> Option<&str> {
         self.prompts.get(idx).map(|p| p.name.as_str())
     }
-
+    #[allow(dead_code)]
     pub(crate) fn prompt_content(&self, idx: usize) -> Option<&str> {
         self.prompts.get(idx).map(|p| p.content.as_str())
+    }
+
+    /// Resolve the filesystem path for the prompt at `idx`.
+    pub(crate) fn prompt_path(&self, idx: usize) -> Option<std::path::PathBuf> {
+        let name = self.prompts.get(idx)?.name.clone();
+        if let Some(meta) = self.prompt_meta_by_name.get(&name) {
+            return Some(meta.path.clone());
+        }
+        self.prompts.get(idx).map(|p| p.path.clone())
     }
 
     /// Update the filter string based on the current composer text. The text
@@ -186,12 +206,25 @@ impl WidgetRef for CommandPopup {
                         is_current: false,
                         description: Some(cmd.description().to_string()),
                     },
-                    CommandItem::UserPrompt(i) => GenericDisplayRow {
-                        name: format!("/{}", self.prompts[i].name),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some("send saved prompt".to_string()),
-                    },
+                    CommandItem::UserPrompt(i) => {
+                        let name = &self.prompts[i].name;
+                        let tag = self
+                            .prompt_meta_by_name
+                            .get(name)
+                            .map(scope_tag)
+                            .unwrap_or_default();
+                        let desc = if tag.is_empty() {
+                            "send saved prompt".to_string()
+                        } else {
+                            format!("send saved prompt {tag}")
+                        };
+                        GenericDisplayRow {
+                            name: format!("/{name}"),
+                            match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
+                            is_current: false,
+                            description: Some(desc),
+                        }
+                    }
                 })
                 .collect()
         };
@@ -207,13 +240,26 @@ impl WidgetRef for CommandPopup {
     }
 }
 
+fn scope_tag(meta: &CustomPromptMeta) -> String {
+    let scope = match meta.scope {
+        codex_protocol::custom_prompts::PromptScope::Project => "project",
+        codex_protocol::custom_prompts::PromptScope::User => "user",
+    };
+    if meta.namespace.is_empty() {
+        format!("({scope})")
+    } else {
+        let ns = meta.namespace.join("/");
+        format!("({scope}:{ns})")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn filter_includes_init_when_typing_prefix() {
-        let mut popup = CommandPopup::new(Vec::new());
+        let mut popup = CommandPopup::new(Vec::new(), HashMap::new());
         // Simulate the composer line starting with '/in' so the popup filters
         // matching commands by prefix.
         popup.on_composer_text_change("/in".to_string());
@@ -233,7 +279,7 @@ mod tests {
 
     #[test]
     fn selecting_init_by_exact_match() {
-        let mut popup = CommandPopup::new(Vec::new());
+        let mut popup = CommandPopup::new(Vec::new(), HashMap::new());
         popup.on_composer_text_change("/init".to_string());
 
         // When an exact match exists, the selected command should be that
@@ -248,7 +294,7 @@ mod tests {
 
     #[test]
     fn model_is_first_suggestion_for_mo() {
-        let mut popup = CommandPopup::new(Vec::new());
+        let mut popup = CommandPopup::new(Vec::new(), HashMap::new());
         popup.on_composer_text_change("/mo".to_string());
         let matches = popup.filtered_items();
         match matches.first() {
@@ -274,7 +320,7 @@ mod tests {
                 content: "hello from bar".to_string(),
             },
         ];
-        let popup = CommandPopup::new(prompts);
+        let popup = CommandPopup::new(prompts, HashMap::new());
         let items = popup.filtered_items();
         let mut prompt_names: Vec<String> = items
             .into_iter()
@@ -290,11 +336,14 @@ mod tests {
     #[test]
     fn prompt_name_collision_with_builtin_is_ignored() {
         // Create a prompt named like a builtin (e.g. "init").
-        let popup = CommandPopup::new(vec![CustomPrompt {
-            name: "init".to_string(),
-            path: "/tmp/init.md".to_string().into(),
-            content: "should be ignored".to_string(),
-        }]);
+        let popup = CommandPopup::new(
+            vec![CustomPrompt {
+                name: "init".to_string(),
+                path: "/tmp/init.md".to_string().into(),
+                content: "should be ignored".to_string(),
+            }],
+            HashMap::new(),
+        );
         let items = popup.filtered_items();
         let has_collision_prompt = items.into_iter().any(|it| match it {
             CommandItem::UserPrompt(i) => popup.prompt_name(i) == Some("init"),

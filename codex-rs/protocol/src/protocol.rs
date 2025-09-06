@@ -11,6 +11,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::custom_prompts::CustomPrompt;
+use crate::custom_prompts::CustomPromptMeta;
 use mcp_types::CallToolResult;
 use mcp_types::Tool as McpTool;
 use serde::Deserialize;
@@ -156,6 +157,17 @@ pub enum Op {
 
     /// Request the list of available custom prompts.
     ListCustomPrompts,
+
+    /// Execute a saved custom prompt with argument expansion.
+    ///
+    /// - `path`: filesystem path to the prompt markdown file
+    /// - `args`: positional arguments parsed from the composer first line
+    /// - `rest`: the unparsed trailing text after the command name
+    RunCustomPrompt {
+        path: PathBuf,
+        args: Vec<String>,
+        rest: String,
+    },
 
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
@@ -875,6 +887,10 @@ pub struct McpListToolsResponseEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ListCustomPromptsResponseEvent {
     pub custom_prompts: Vec<CustomPrompt>,
+    /// Enriched metadata for prompts including scope and namespace.
+    /// Transitional: parallel to `custom_prompts` for UI migration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_prompts_meta: Vec<CustomPromptMeta>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]

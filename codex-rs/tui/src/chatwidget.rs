@@ -34,6 +34,7 @@ use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::UserMessageEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
+use codex_protocol::custom_prompts::CustomPromptMeta;
 use codex_protocol::parse_command::ParsedCommand;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -1339,7 +1340,14 @@ impl ChatWidget {
         let len = ev.custom_prompts.len();
         debug!("received {len} custom prompts");
         // Forward to bottom pane so the slash popup can show them now.
+        // Also provide enriched metadata for scope/namespace tags.
+        let meta_map: std::collections::HashMap<String, CustomPromptMeta> = ev
+            .custom_prompts_meta
+            .into_iter()
+            .map(|m| (m.name.clone(), m))
+            .collect();
         self.bottom_pane.set_custom_prompts(ev.custom_prompts);
+        self.bottom_pane.set_custom_prompts_meta(meta_map);
     }
 
     /// Programmatically submit a user text message as if typed in the
