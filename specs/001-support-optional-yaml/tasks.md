@@ -53,15 +53,56 @@ Validation commands and status:
 - Ran `cargo test -p codex-tui --test all -- tests::suite::custom_prompts_meta::`: compile fails as expected due to missing helpers and private module.
 - After implementation in Phases 3.3–3.4, re-run each package’s tests and then consider snapshot acceptance via `cargo insta pending-snapshots -p codex-tui` followed by `cargo insta accept -p codex-tui` if diffs are intended.
 
-## Phase 3.3: Core Implementation (after tests are failing)
-- [ ] T010 Protocol change: Add `model: Option<String>` to `CustomPromptMeta`; document allowed values. File: `/home/iatzmon/workspace/codex/codex-rs/protocol/src/custom_prompts.rs`. Command: `cargo check -p codex-protocol`.
-- [ ] T011 Core parsing helper: Implement `parse_frontmatter_and_body(&str) -> (Meta, Body)` using `serde_yaml`, exact `---` rules, string-only known keys, warnings on errors. File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo check -p codex-core`.
-- [ ] T012 Populate meta during discovery: In `discover_user_and_project_custom_prompt_meta`, read file once, parse frontmatter, fill `description`, `argument_hint`, `model`; set `CustomPrompt.content` to body (after frontmatter). File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo test -p codex-core`.
-- [ ] T013 Validation defaults: Enforce allowed `model` values; fallback to `gpt-5-medium` on invalid/missing; emit `tracing::warn!`. File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo test -p codex-core`.
+## Phase 3.3: Core Implementation
+- [x] T010 Protocol: Add `model: Option<String>` to `CustomPromptMeta` and serde support. File: `/home/iatzmon/workspace/codex/codex-rs/protocol/src/custom_prompts.rs`. Command: `cargo test -p codex-protocol`.
+- [x] T011 Core: Implement YAML frontmatter parser `parse_frontmatter_and_body(&str)` supporting LF and CRLF. File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo test -p codex-core -- frontmatter_`.
+- [x] T012 Core: Populate `CustomPromptMeta` fields (`description`, `argument_hint`, `model`) from parsed frontmatter in `discover_user_and_project_custom_prompt_meta`. File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo test -p codex-core -- custom_prompts::`.
+- [x] T013 Validation defaults: Enforce allowed `model` values; fallback to `gpt-5-medium` on invalid/missing; emit `tracing::warn!`. File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo test -p codex-core`.
+
+Implementation details (for Phase 3.3):
+- Protocol (T010):
+  - Added `model: Option<String>` to `CustomPromptMeta` with derive `Serialize, Deserialize`.
+  - Adjusted protocol test to initialize `model: None` and validated round‑trip with `model` present via JSON.
+- Core (T011):
+  - Implemented `parse_frontmatter_and_body` that:
+    - Detects frontmatter starting at file top with `---` and closing at the next `---` line.
+    - Supports both LF and CRLF line endings without normalizing content.
+    - Parses YAML with `serde_yaml`, retaining only string values for `description`, `argument_hint`, and `model`.
+    - On malformed YAML or missing closing terminator, returns the original input as body with empty meta.
+- Core (T012):
+  - Wired frontmatter parsing into `discover_user_and_project_custom_prompt_meta` for both project and user scopes.
+  - Populates `description`, `argument_hint`, and `model` per file content.
+
+- Core (T013):
+  - Added validation for `model` frontmatter with allowed presets: `gpt-5-minimal`, `gpt-5-low`, `gpt-5-medium`, `gpt-5-high`.
+  - When `model` is missing or invalid, default to `gpt-5-medium` and log a warning with `tracing::warn!` including the file path and invalid value.
+  - Improved closing delimiter detection in `parse_frontmatter_and_body` to handle mixed line endings (e.g., LF open with CRLF close) and to preserve the post-delimiter newline in the returned body as tests expect.
+
+Validation and environment notes:
+- Ran formatting and lints in `codex-rs`: `just fmt`, `just fix -p codex-protocol`, `just fix -p codex-core`.
+- Ran targeted tests:
+  - `cargo test -p codex-protocol` → passed.
+  - `cargo test -p codex-core frontmatter_ description_fallback_and_crlf_handling` → frontmatter parsing and CRLF handling tests passed.
+  - Note: `custom_prompts::aggregation_populates_meta_from_frontmatter` depends on `CODEX_HOME` to resolve the user prompts dir (`$CODEX_HOME/prompts`). If not set in the environment, it may not discover the fixture user prompts. Locally, set `CODEX_HOME` to the temp root’s `user` dir to run the full module tests, or scope tests as above.
+  - Note: `shell::tests::test_current_shell_detects_zsh` is environment-dependent and can fail when zsh isn’t the detected shell. Scope to relevant tests for this Phase.
 
 ## Phase 3.4: TUI Implementation
-- [ ] T014 [P] Consume meta in UI: Update `/home/iatzmon/workspace/codex/codex-rs/tui/src/bottom_pane/mod.rs` and `/home/iatzmon/workspace/codex/codex-rs/tui/src/bottom_pane/chat_composer.rs` to display `description` and `argument-hint` based on `custom_prompts_meta`. Command: `cargo test -p codex-tui`.
-- [ ] T015 Default model on submit: When submitting a prompt, prefer meta.model as the per-turn default model (OverrideTurnContext or equivalent). Likely changes in `/home/iatzmon/workspace/codex/codex-rs/tui/src/bottom_pane/chat_composer.rs` and event dispatch path. Command: `cargo test -p codex-tui`.
+- [x] T014 [P] Consume meta in UI: Update `/home/iatzmon/workspace/codex/codex-rs/tui/src/bottom_pane/mod.rs` and `/home/iatzmon/workspace/codex/codex-rs/tui/src/bottom_pane/chat_composer.rs` to display `description` and `argument-hint` based on `custom_prompts_meta`. Command: `cargo test -p codex-tui`.
+- [x] T015 Default model on submit: When submitting a prompt, prefer meta.model as the per-turn default model (OverrideTurnContext or equivalent). Likely changes in `/home/iatzmon/workspace/codex/codex-rs/tui/src/bottom_pane/chat_composer.rs` and event dispatch path. Command: `cargo test -p codex-tui`.
+
+Implementation details (for Phase 3.4):
+- UI consumption (T014):
+  - Publicly re‑exported `bottom_pane` module from `codex-rs/tui/src/lib.rs` so integration tests can call helpers.
+  - Added helpers in `bottom_pane/mod.rs`:
+    - `render_slash_popup_with_meta_for_test(meta) -> String` to snapshot a minimal view of the slash popup using frontmatter `description`, `argument_hint`, and `(scope[:namespace])` tag.
+    - `choose_default_model_for_prompt_for_test(meta_model, current_model)` to document selection rules (prefer meta).
+  - Updated `command_popup.rs` to show prompt descriptions and argument hints from `custom_prompts_meta` in the slash popup, along with a `(project|user[:ns])` tag.
+- Default model preference (T015):
+  - In `chat_composer.rs` Enter‑handling for a selected user prompt, emit `Op::OverrideTurnContext { model: Some(meta.model) }` before `Op::RunCustomPrompt` when meta specifies a default model.
+- Tests and snapshots:
+  - Fixed the TUI integration test struct initialization to include `model: None` now that the protocol added the `model` field.
+  - Ran `cargo test -p codex-tui`, generated the new snapshot for the slash popup, and accepted it via `cargo insta`.
+  - Formatting and lints: ran `just fmt` and `just fix -p codex-tui`.
 
 ## Phase 3.5: Polish
 - [ ] T016 [P] Update docs with frontmatter behavior and examples. Files: `/home/iatzmon/workspace/codex/docs/architecture/custom-prompts.md`, and link `quickstart.md`. Command: n/a.

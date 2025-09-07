@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use tokio::fs;
+use tracing::warn;
 
 /// Return the default prompts directory: `$CODEX_HOME/prompts`.
 /// If `CODEX_HOME` cannot be resolved, returns `None`.
@@ -209,6 +210,10 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
 
     // Project first so it wins on collisions
     for item in discover_prompts_recursive(&project_dir).await {
+        let (fm, _body) = parse_frontmatter_and_body(&item.content);
+        let description = fm.get("description").cloned();
+        let argument_hint = fm.get("argument_hint").cloned();
+        let model = validate_or_default_model(fm.get("model"), &item.path);
         let namespace: Vec<String> = if item.rel_dir.as_os_str().is_empty() {
             Vec::new()
         } else {
@@ -224,8 +229,9 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
                 path: item.path,
                 scope: PromptScope::Project,
                 namespace,
-                description: None,
-                argument_hint: None,
+                description,
+                argument_hint,
+                model,
             },
         );
     }
@@ -233,6 +239,10 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
     // Then user scope; keep existing when colliding
     if let Some(user_dir) = default_prompts_dir() {
         for item in discover_prompts_recursive(&user_dir).await {
+            let (fm, _body) = parse_frontmatter_and_body(&item.content);
+            let description = fm.get("description").cloned();
+            let argument_hint = fm.get("argument_hint").cloned();
+            let model = validate_or_default_model(fm.get("model"), &item.path);
             let namespace: Vec<String> = if item.rel_dir.as_os_str().is_empty() {
                 Vec::new()
             } else {
@@ -248,8 +258,9 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
                     path: item.path,
                     scope: PromptScope::User,
                     namespace,
-                    description: None,
-                    argument_hint: None,
+                    description,
+                    argument_hint,
+                    model,
                 });
         }
     }
@@ -257,6 +268,37 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
     let mut out: Vec<CustomPromptMeta> = selected.into_values().collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Return the default model preset ID used when a prompt does not specify a valid model.
+fn default_model_id() -> &'static str {
+    "gpt-5-medium"
+}
+
+/// Return true if the provided model preset ID is allowed.
+fn is_allowed_model(model: &str) -> bool {
+    matches!(
+        model,
+        "gpt-5-minimal" | "gpt-5-low" | "gpt-5-medium" | "gpt-5-high"
+    )
+}
+
+/// Validate a model value parsed from frontmatter. If missing or invalid, return the default.
+/// Logs a warning for invalid values.
+fn validate_or_default_model(model: Option<&String>, path: &Path) -> Option<String> {
+    match model {
+        Some(m) if is_allowed_model(m) => Some(m.clone()),
+        Some(m) => {
+            warn!(
+                "Invalid model '{}' in prompt frontmatter ({}); falling back to '{}'",
+                m,
+                path.display(),
+                default_model_id()
+            );
+            Some(default_model_id().to_string())
+        }
+        None => Some(default_model_id().to_string()),
+    }
 }
 
 /// Expand `$ARGUMENTS` and `$1..$n` placeholders in `content`.
@@ -312,11 +354,78 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
     out
 }
 
+/// Parse optional YAML frontmatter and return a tuple of (meta, body).
+///
+/// - If input starts with a line that is exactly `---` (allowing either `\n` or `\r\n` EOL),
+///   attempts to find the next line that is exactly `---` and parse the enclosed YAML.
+/// - Only string values for known keys are retained: `description`, `argument_hint`, `model`.
+/// - On malformed YAML or missing closing terminator, returns an empty meta map and the original input as body.
+pub fn parse_frontmatter_and_body(input: &str) -> (HashMap<String, String>, String) {
+    let mut out: HashMap<String, String> = HashMap::new();
+
+    // Must start with opening delimiter in either CRLF or LF style.
+    let (open_len, rest) = if let Some(s) = input.strip_prefix("---\r\n") {
+        (5, s)
+    } else if let Some(s) = input.strip_prefix("---\n") {
+        (4, s)
+    } else {
+        return (out, input.to_string());
+    };
+
+    // Find the closing delimiter sequence, preferring the earliest occurrence.
+    // Support mixed line endings around the closing delimiter.
+    // Tuple is (pattern, pattern_len, trailing_newline_len)
+    let candidates: [(&str, usize, usize); 4] = [
+        ("\r\n---\r\n", 7, 2),
+        ("\n---\n", 5, 1),
+        ("\n---\r\n", 6, 2),
+        ("\r\n---\n", 6, 1),
+    ];
+    let mut best: Option<(usize, usize)> = None;
+    for (pat, pat_len, trailing_len) in candidates {
+        if let Some(pos) = rest.find(pat) {
+            // We want the body to start right after the three dashes, preserving
+            // the newline after the closing delimiter. Compute the offset from
+            // the start of `rest` to that position as `pat_len - trailing_len`.
+            let after_dashes_inc = pat_len - trailing_len;
+            best = match best {
+                Some((cur_pos, cur_inc)) if pos >= cur_pos => Some((cur_pos, cur_inc)),
+                _ => Some((pos, after_dashes_inc)),
+            }
+        }
+    }
+    let Some((close_rel, after_dashes_inc)) = best else {
+        return (out, input.to_string());
+    };
+
+    let yaml_payload = &input[open_len..open_len + close_rel];
+    let body_start = open_len + close_rel + after_dashes_inc;
+
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml_payload) {
+        Ok(val) => {
+            if let serde_yaml::Value::Mapping(map) = val {
+                for (k, v) in map {
+                    let Some(key) = k.as_str() else { continue };
+                    if key != "description" && key != "argument_hint" && key != "model" {
+                        continue;
+                    }
+                    if let Some(s) = v.as_str() {
+                        out.insert(key.to_string(), s.to_string());
+                    }
+                }
+            }
+        }
+        Err(_) => return (HashMap::new(), input.to_string()),
+    }
+
+    (out, input[body_start..].to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use std::collections::HashMap as Map;
+
     use std::fs;
     use tempfile::tempdir;
 
