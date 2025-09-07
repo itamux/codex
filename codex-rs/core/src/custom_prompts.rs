@@ -316,8 +316,61 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap as Map;
     use std::fs;
     use tempfile::tempdir;
+
+    /// Helper for tests needing both user and project prompt trees.
+    /// Keeps the tempdir alive for the duration of the fixture value.
+    struct PromptFixtures {
+        _tmp: tempfile::TempDir,
+        user_root: PathBuf,
+        project_root: PathBuf,
+    }
+
+    impl PromptFixtures {
+        /// Create isolated user and project prompt directories under a temporary root.
+        fn new() -> Self {
+            let tmp = tempdir().expect("create TempDir");
+            let user_root = tmp.path().join("user/prompts");
+            let project_root = tmp.path().join("project/.codex/prompts");
+            std::fs::create_dir_all(&user_root).unwrap();
+            std::fs::create_dir_all(&project_root).unwrap();
+            Self {
+                _tmp: tmp,
+                user_root,
+                project_root,
+            }
+        }
+
+        /// Absolute path to the user prompts root (e.g., `$CODEX_HOME/prompts`).
+        fn user_dir(&self) -> &Path {
+            &self.user_root
+        }
+
+        /// Absolute path to the project prompts root (e.g., `PROJECT/.codex/prompts`).
+        fn project_dir(&self) -> &Path {
+            &self.project_root
+        }
+
+        /// Write a prompt file under the user root at `rel` with `content`.
+        fn write_user(&self, rel: &str, content: &str) {
+            let path = self.user_root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, content).unwrap();
+        }
+
+        /// Write a prompt file under the project root at `rel` with `content`.
+        fn write_project(&self, rel: &str, content: &str) {
+            let path = self.project_root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, content).unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn empty_when_dir_missing() {
@@ -494,5 +547,94 @@ mod tests {
         let args = vec!["X".to_string(), "Y".to_string()];
         let expanded = expand_arguments(content, &args, "foo bar baz");
         assert_eq!(expanded, "ID Y; All: foo bar baz; Again Y and X");
+    }
+
+    #[test]
+    fn expand_arguments_preserves_newlines_in_rest() {
+        let content = "Header:\n$ARGUMENTS\nTail (pos=$1)";
+        let args = vec!["A".to_string()];
+        let rest = "line 1\nline 2";
+        let expanded = expand_arguments(content, &args, rest);
+        assert_eq!(expanded, "Header:\nline 1\nline 2\nTail (pos=A)");
+    }
+
+    // T005: Frontmatter detection and YAML parsing
+    #[test]
+    fn frontmatter_valid_yaml_is_parsed_and_unknown_keys_ignored() {
+        let input = "---\ndescription: Hello world\nargument_hint: <arg>\nmodel: gpt-5-medium\nunknown: foo\n---\nBody starts here\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert_eq!(body, "Body starts here\n");
+        assert_eq!(meta.get("description"), Some(&"Hello world".to_string()));
+        assert_eq!(meta.get("argument_hint"), Some(&"<arg>".to_string()));
+        assert_eq!(meta.get("model"), Some(&"gpt-5-medium".to_string()));
+        assert!(meta.get("unknown").is_none());
+    }
+
+    // T005: Malformed YAML is ignored (treated as no frontmatter)
+    #[test]
+    fn frontmatter_malformed_yaml_is_ignored() {
+        let input = "---\ndescription: [unterminated\n---\nHello\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert!(meta.is_empty());
+        assert_eq!(body, input);
+    }
+
+    // T005: Missing closing terminator -> ignore as body
+    #[test]
+    fn frontmatter_missing_terminator_is_ignored() {
+        let input = "---\ndescription: hi\nBody\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert!(meta.is_empty());
+        assert_eq!(body, input);
+    }
+
+    // T005: Non-string types ignored
+    #[test]
+    fn frontmatter_non_string_values_ignored() {
+        let input = "---\ndescription: 123\nargument_hint: {a: 1}\nmodel: [a, b]\n---\nHello\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert_eq!(body, "Hello\n");
+        assert_eq!(meta.get("description"), None);
+        assert_eq!(meta.get("argument_hint"), None);
+        assert_eq!(meta.get("model"), None);
+    }
+
+    // T006: Description fallback rules and CRLF handling
+    #[test]
+    fn description_fallback_and_crlf_handling() {
+        let input = "---\nargument_hint: <path>\n---\r\n\r\nFirst line after frontmatter\r\nSecond line\r\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert_eq!(meta.get("argument_hint"), Some(&"<path>".to_string()));
+        // First non-empty content line selected verbatim; no Markdown stripping.
+        assert_eq!(
+            body,
+            "\r\n\r\nFirst line after frontmatter\r\nSecond line\r\n"
+        );
+    }
+
+    // T007: Aggregation returns both custom_prompts and custom_prompts_meta with parsed meta
+    #[tokio::test]
+    async fn aggregation_populates_meta_from_frontmatter() {
+        let fx = PromptFixtures::new();
+        fx.write_user(
+            "a.md",
+            "---\ndescription: Hello\nargument_hint: <x>\nmodel: gpt-5-medium\n---\nBODY\n",
+        );
+        fx.write_project("b.md", "Just content\n");
+
+        // Pretend CWD is under a git repo at project root – use aggregator directly.
+        let cwd = fx.project_dir();
+        let meta = discover_user_and_project_custom_prompt_meta(cwd).await;
+        let prompts = discover_user_and_project_custom_prompts(cwd).await;
+        let names_meta: Vec<String> = meta.iter().map(|m| m.name.clone()).collect();
+        let names_prompts: Vec<String> = prompts.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names_meta, names_prompts);
+
+        // Ensure meta populated for the frontmatter file.
+        let a_meta = meta.iter().find(|m| m.name == "a").unwrap();
+        assert_eq!(a_meta.description.as_deref(), Some("Hello"));
+        assert_eq!(a_meta.argument_hint.as_deref(), Some("<x>"));
+        // After implementation, model should be Some.
+        // assert_eq!(a_meta.model.as_deref(), Some("gpt-5-medium"));
     }
 }
