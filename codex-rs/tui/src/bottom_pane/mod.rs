@@ -523,7 +523,12 @@ pub fn render_slash_popup_with_meta_for_test(
         } else {
             format!("{inner} {tag}")
         };
-        lines.push(format!("/{name}  {desc}"));
+        let display_name = if m.namespace.is_empty() {
+            name.clone()
+        } else {
+            format!("{}:{name}", m.namespace[0])
+        };
+        lines.push(format!("/{display_name}  {desc}"));
     }
     lines.join("\n")
 }

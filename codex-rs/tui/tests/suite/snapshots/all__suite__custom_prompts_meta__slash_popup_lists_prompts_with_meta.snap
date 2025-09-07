@@ -2,4 +2,4 @@
 source: tui/tests/suite/custom_prompts_meta.rs
 expression: rendered
 ---
-/build  Build the project <target> (user:dev)
+/dev:build  Build the project <target> (user:dev)

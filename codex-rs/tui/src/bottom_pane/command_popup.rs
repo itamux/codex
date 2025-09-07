@@ -141,8 +141,19 @@ impl CommandPopup {
                 out.push((CommandItem::Builtin(*cmd), Some(indices), score));
             }
         }
-        for (idx, p) in self.prompts.iter().enumerate() {
-            if let Some((indices, score)) = fuzzy_match(&p.name, filter) {
+        for (idx, _p) in self.prompts.iter().enumerate() {
+            let disp = {
+                if let Some(m) = self.prompt_meta_by_name.get(&self.prompts[idx].name) {
+                    if let Some(ns) = m.namespace.first() {
+                        format!("{}:{}", ns, self.prompts[idx].name)
+                    } else {
+                        self.prompts[idx].name.clone()
+                    }
+                } else {
+                    self.prompts[idx].name.clone()
+                }
+            };
+            if let Some((indices, score)) = fuzzy_match(&disp, filter) {
                 out.push((CommandItem::UserPrompt(idx), Some(indices), score));
             }
         }
@@ -151,11 +162,31 @@ impl CommandPopup {
             a.2.cmp(&b.2).then_with(|| {
                 let an = match a.0 {
                     CommandItem::Builtin(c) => c.command(),
-                    CommandItem::UserPrompt(i) => &self.prompts[i].name,
+                    CommandItem::UserPrompt(i) => &{
+                        if let Some(m) = self.prompt_meta_by_name.get(&self.prompts[i].name) {
+                            if let Some(ns) = m.namespace.first() {
+                                format!("{}:{}", ns, self.prompts[i].name)
+                            } else {
+                                self.prompts[i].name.clone()
+                            }
+                        } else {
+                            self.prompts[i].name.clone()
+                        }
+                    },
                 };
                 let bn = match b.0 {
                     CommandItem::Builtin(c) => c.command(),
-                    CommandItem::UserPrompt(i) => &self.prompts[i].name,
+                    CommandItem::UserPrompt(i) => &{
+                        if let Some(m) = self.prompt_meta_by_name.get(&self.prompts[i].name) {
+                            if let Some(ns) = m.namespace.first() {
+                                format!("{}:{}", ns, self.prompts[i].name)
+                            } else {
+                                self.prompts[i].name.clone()
+                            }
+                        } else {
+                            self.prompts[i].name.clone()
+                        }
+                    },
                 };
                 an.cmp(bn)
             })
@@ -208,6 +239,15 @@ impl WidgetRef for CommandPopup {
                     },
                     CommandItem::UserPrompt(i) => {
                         let name = &self.prompts[i].name;
+                        let display_name = if let Some(m) = self.prompt_meta_by_name.get(name) {
+                            if let Some(ns) = m.namespace.first() {
+                                format!("{ns}:{name}")
+                            } else {
+                                name.to_string()
+                            }
+                        } else {
+                            name.to_string()
+                        };
                         // Build description using meta when available: include argument
                         // hint and/or description from frontmatter, plus scope tag.
                         let (desc, _arg_hint): (String, Option<String>) =
@@ -234,7 +274,7 @@ impl WidgetRef for CommandPopup {
                                 ("send saved prompt".to_string(), None)
                             };
                         GenericDisplayRow {
-                            name: format!("/{name}"),
+                            name: format!("/{display_name}"),
                             match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                             is_current: false,
                             description: Some(desc),

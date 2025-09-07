@@ -46,6 +46,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 /// If the pasted content exceeds this number of characters, replace it with a
 /// placeholder in the UI.
@@ -1467,6 +1468,31 @@ impl WidgetRef for ChatComposer {
 
         let mut state = self.textarea_state.borrow_mut();
         StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
+        // Show argument-hint placeholder for custom prompts while typing the command name.
+        if let Some(first_line) = self.textarea.text().lines().next()
+            && let Some(stripped) = first_line.strip_prefix('/')
+        {
+            let token = stripped.trim_start();
+            let cmd_token = token.split_whitespace().next().unwrap_or("");
+            let after_cmd = &token[cmd_token.len()..];
+            // Only show placeholder when no non-space args have been typed yet.
+            if after_cmd.chars().all(|c| c.is_whitespace()) && !cmd_token.is_empty() {
+                // Resolve meta by basename (support optional namespace prefix like ns:name).
+                let base = cmd_token.rsplit(':').next().unwrap_or(cmd_token);
+                if let Some(meta) = self.custom_prompts_meta.get(base)
+                    && let Some(hint) = meta.argument_hint.as_ref()
+                {
+                    let inner = textarea_rect.inner(Margin::new(1, 0));
+                    let prefix_width = UnicodeWidthStr::width(first_line);
+                    let x = inner.x.saturating_add(prefix_width as u16);
+                    let w = inner.width.saturating_sub(prefix_width as u16);
+                    let pos = Rect::new(x, inner.y, w, 1);
+                    Line::from(hint.as_str())
+                        .style(Style::default().dim())
+                        .render_ref(pos, buf);
+                }
+            }
+        }
         if self.textarea.text().is_empty() {
             Line::from(self.placeholder_text.as_str())
                 .style(Style::default().dim())
