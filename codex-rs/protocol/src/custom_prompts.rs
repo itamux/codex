@@ -40,6 +40,8 @@ pub struct CustomPromptMeta {
     pub description: Option<String>,
     /// Optional argument hint extracted from YAML frontmatter.
     pub argument_hint: Option<String>,
+    /// Optional default model extracted from YAML frontmatter.
+    pub model: Option<String>,
 }
 
 #[cfg(test)]
@@ -59,6 +61,7 @@ mod tests {
             namespace: vec!["team".to_string(), "sub".to_string()],
             description: Some("Short description".to_string()),
             argument_hint: Some("<arg>".to_string()),
+            model: None,
             // model: Some("gpt-5-medium".to_string()),
         };
 

@@ -208,16 +208,31 @@ impl WidgetRef for CommandPopup {
                     },
                     CommandItem::UserPrompt(i) => {
                         let name = &self.prompts[i].name;
-                        let tag = self
-                            .prompt_meta_by_name
-                            .get(name)
-                            .map(scope_tag)
-                            .unwrap_or_default();
-                        let desc = if tag.is_empty() {
-                            "send saved prompt".to_string()
-                        } else {
-                            format!("send saved prompt {tag}")
-                        };
+                        // Build description using meta when available: include argument
+                        // hint and/or description from frontmatter, plus scope tag.
+                        let (desc, _arg_hint): (String, Option<String>) =
+                            if let Some(meta) = self.prompt_meta_by_name.get(name) {
+                                let tag = scope_tag(meta);
+                                let mut parts: Vec<String> = Vec::new();
+                                if let Some(d) = meta.description.as_ref() {
+                                    parts.push(d.to_string());
+                                }
+                                if let Some(hint) = meta.argument_hint.as_ref() {
+                                    parts.push(hint.to_string());
+                                }
+                                let inner = if parts.is_empty() {
+                                    "send saved prompt".to_string()
+                                } else {
+                                    parts.join(" ")
+                                };
+                                if tag.is_empty() {
+                                    (inner, meta.argument_hint.clone())
+                                } else {
+                                    (format!("{inner} {tag}"), meta.argument_hint.clone())
+                                }
+                            } else {
+                                ("send saved prompt".to_string(), None)
+                            };
                         GenericDisplayRow {
                             name: format!("/{name}"),
                             match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),

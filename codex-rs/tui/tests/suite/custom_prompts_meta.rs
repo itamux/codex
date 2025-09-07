@@ -17,7 +17,7 @@ fn slash_popup_lists_prompts_with_meta() {
             namespace: vec!["dev".into()],
             description: Some("Build the project".into()),
             argument_hint: Some("<target>".into()),
-            // model: Some("gpt-5-medium".into()),
+            model: None,
         },
     );
 
@@ -37,4 +37,3 @@ fn prompt_submission_prefers_meta_model_when_present() {
     );
     assert_eq!(chosen.as_deref(), Some("gpt-5-medium"));
 }
-

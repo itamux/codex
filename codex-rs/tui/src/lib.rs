@@ -30,7 +30,7 @@ mod app_backtrack;
 mod app_event;
 mod app_event_sender;
 mod backtrack_helpers;
-mod bottom_pane;
+pub mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
 mod cli;
