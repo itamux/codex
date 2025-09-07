@@ -397,10 +397,21 @@ impl ChatComposer {
                         }
                         CommandItem::UserPrompt(idx) => {
                             if let Some(name) = popup.prompt_name(idx) {
+                                // Prefer namespaced display if available (first component).
+                                let display = if let Some(meta) = self.custom_prompts_meta.get(name)
+                                {
+                                    if let Some(ns) = meta.namespace.first() {
+                                        format!("{ns}:{name}")
+                                    } else {
+                                        name.to_string()
+                                    }
+                                } else {
+                                    name.to_string()
+                                };
                                 let starts_with_cmd =
-                                    first_line.trim_start().starts_with(&format!("/{name}"));
+                                    first_line.trim_start().starts_with(&format!("/{display}"));
                                 if !starts_with_cmd {
-                                    self.textarea.set_text(&format!("/{name} "));
+                                    self.textarea.set_text(&format!("/{display} "));
                                 }
                             }
                         }
@@ -1780,6 +1791,54 @@ mod tests {
         // Any edit that removes the placeholder should clear pending_paste
         composer.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         assert!(composer.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn tab_completion_inserts_namespaced_prompt() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        // Provide a single custom prompt with a namespace so popup resolves to "ns:name".
+        composer.set_custom_prompts(vec![codex_protocol::custom_prompts::CustomPrompt {
+            name: "ai_review".into(),
+            path: "/tmp/engineer/ai_review.md".into(),
+            content: "body".into(),
+        }]);
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "ai_review".into(),
+            codex_protocol::custom_prompts::CustomPromptMeta {
+                name: "ai_review".into(),
+                path: std::path::PathBuf::from("/tmp/engineer/ai_review.md"),
+                scope: codex_protocol::custom_prompts::PromptScope::Project,
+                namespace: vec!["engineer".into()],
+                description: None,
+                argument_hint: None,
+                model: None,
+            },
+        );
+        composer.set_custom_prompts_meta(meta);
+
+        // Start typing the namespaced command prefix.
+        composer.set_text_content("/engineer:ai".to_string());
+        // Nudge the composer so the slash popup is created (set_text_content
+        // also syncs the file popup which can hide the slash popup).
+        let (_res0, _redraw0) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Trigger Tab completion.
+        let (_res, _redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(composer.current_text(), "/engineer:ai_review ");
     }
 
     #[test]

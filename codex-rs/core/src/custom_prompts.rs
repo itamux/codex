@@ -89,10 +89,11 @@ fn project_root_from_cwd(cwd: &Path) -> PathBuf {
     let mut root = crate::git_info::get_git_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     if root.file_name().map(|n| n == "prompts").unwrap_or(false)
         && let Some(parent) = root.parent()
-            && parent.file_name().map(|n| n == ".codex").unwrap_or(false)
-                && let Some(grand) = parent.parent() {
-                    root = grand.to_path_buf();
-                }
+        && parent.file_name().map(|n| n == ".codex").unwrap_or(false)
+        && let Some(grand) = parent.parent()
+    {
+        root = grand.to_path_buf();
+    }
     root
 }
 
@@ -448,11 +449,20 @@ pub fn parse_frontmatter_and_body(input: &str) -> (HashMap<String, String>, Stri
             if let serde_yaml::Value::Mapping(map) = val {
                 for (k, v) in map {
                     let Some(key) = k.as_str() else { continue };
-                    if key != "description" && key != "argument_hint" && key != "model" {
+                    // Normalize supported keys: accept both `argument_hint` and `argument-hint`.
+                    let norm_key = if key == "argument-hint" {
+                        "argument_hint"
+                    } else {
+                        key
+                    };
+                    if norm_key != "description"
+                        && norm_key != "argument_hint"
+                        && norm_key != "model"
+                    {
                         continue;
                     }
                     if let Some(s) = v.as_str() {
-                        out.insert(key.to_string(), s.to_string());
+                        out.insert(norm_key.to_string(), s.to_string());
                     }
                 }
             }
