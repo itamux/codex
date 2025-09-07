@@ -39,6 +39,7 @@ use crate::bottom_pane::textarea::TextAreaState;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
 use crate::key_hint;
+use codex_common::model_presets::builtin_model_presets;
 use codex_file_search::FileMatch;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -503,15 +504,29 @@ impl ChatComposer {
                             // for this turn by sending an OverrideTurnContext op.
                             if let Some(name) = selected_name.as_ref()
                                 && let Some(meta) = self.custom_prompts_meta.get(name)
-                                && let Some(model) = meta.model.as_ref()
+                                && let Some(model_id) = meta.model.as_ref()
                             {
+                                let mut chosen_model: Option<String> = None;
+                                let mut chosen_effort: Option<
+                                    codex_core::protocol_config_types::ReasoningEffort,
+                                > = None;
+                                for p in builtin_model_presets().iter() {
+                                    if p.id == model_id.as_str() {
+                                        chosen_model = Some(p.model.to_string());
+                                        chosen_effort = Some(p.effort);
+                                        break;
+                                    }
+                                }
+                                if chosen_model.is_none() {
+                                    chosen_model = Some(model_id.clone());
+                                }
                                 self.app_event_tx.send(AppEvent::CodexOp(
                                     Op::OverrideTurnContext {
                                         cwd: None,
                                         approval_policy: None,
                                         sandbox_policy: None,
-                                        model: Some(model.clone()),
-                                        effort: None,
+                                        model: chosen_model,
+                                        effort: chosen_effort,
                                         summary: None,
                                     },
                                 ));
