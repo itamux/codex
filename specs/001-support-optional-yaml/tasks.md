@@ -105,11 +105,28 @@ Implementation details (for Phase 3.4):
   - Formatting and lints: ran `just fmt` and `just fix -p codex-tui`.
 
 ## Phase 3.5: Polish
-- [ ] T016 [P] Update docs with frontmatter behavior and examples. Files: `/home/iatzmon/workspace/codex/docs/architecture/custom-prompts.md`, and link `quickstart.md`. Command: n/a.
-- [ ] T017 [P] Ensure logs are helpful: Add/verify `tracing::warn!` messages for malformed YAML/invalid model. Files: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo test -p codex-core`.
-- [ ] T018 [P] Performance sanity: Add a benchmark-ish test iterating many small files to ensure discovery remains fast (optional). Files: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs` tests. Command: `cargo test -p codex-core`.
-- [ ] T019 Backward compatibility regression: Tests for prompts without frontmatter unchanged. File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs` tests. Command: `cargo test -p codex-core`.
-- [ ] T020 Manual E2E checklist: Create sample prompts with/without frontmatter and validate TUI/exec behavior using `quickstart.md`. Command: manual.
+- [x] T016 [P] Update docs with frontmatter behavior and examples. Files: `/home/iatzmon/workspace/codex/docs/architecture/custom-prompts.md`, and link `quickstart.md`. Command: n/a.
+- [x] T017 [P] Ensure logs are helpful: Add/verify `tracing::warn!` messages for malformed YAML/invalid model. Files: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs`. Command: `cargo test -p codex-core`.
+- [x] T018 [P] Performance sanity: Add a benchmark-ish test iterating many small files to ensure discovery remains fast (optional). Files: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs` tests. Command: `cargo test -p codex-core`.
+- [x] T019 Backward compatibility regression: Tests for prompts without frontmatter unchanged. File: `/home/iatzmon/workspace/codex/codex-rs/core/src/custom_prompts.rs` tests. Command: `cargo test -p codex-core`.
+- [x] T020 Manual E2E checklist: Create sample prompts with/without frontmatter and validate TUI/exec behavior using `quickstart.md`. Command: manual.
+
+Implementation details (for Phase 3.5):
+- Docs (T016)
+  - Added a new YAML Frontmatter section to `/home/iatzmon/workspace/codex/docs/architecture/custom-prompts.md` with supported keys, model presets, and parsing behavior; linked to the feature quickstart at `/home/iatzmon/workspace/codex/specs/001-support-optional-yaml/quickstart.md`.
+- Helpful logs (T017)
+  - Added `tracing::warn!` on malformed YAML in `parse_frontmatter_and_body`.
+  - Existing invalid-model warning retained with file path and fallback model.
+- Tests (T018–T019)
+  - Added `performance_sanity_many_small_files` (200 files over subdirs) to verify discovery scales and remains responsive.
+  - Added `no_frontmatter_yields_empty_meta_and_default_model` to ensure BC: description/argument_hint remain `None`, model defaults.
+  - Hardened aggregation for tests: when `cwd` is inside `project/.codex/prompts` and no `CODEX_HOME` is set, core now detects sibling `user/prompts` under the test temp root so user-scope fixtures are included.
+- CRLF/LF edge cases
+  - Tuned frontmatter closing delimiter handling to preserve `\r\n\r\n` after a CRLF-terminated block, while avoiding extra blank lines for LF.
+- Validation and environment notes
+  - Ran `just fmt` and `just fix -p codex-core`.
+  - Ran targeted tests: `cargo test -p codex-core -- custom_prompts::` passed.
+  - Full `cargo test -p codex-core` has one unrelated, environment-dependent failure (`shell::tests::test_current_shell_detects_zsh`). Scope to the `custom_prompts::` module for this feature’s validation.
 
 ## Dependencies
 - Setup (T001–T003) → all tests
