@@ -20,7 +20,7 @@ CODEX_CLI_ROOT=""
 # Until we start publishing stable GitHub releases, we have to grab the binaries
 # from the GitHub Action that created them. Update the URL below to point to the
 # appropriate workflow run:
-WORKFLOW_URL="https://github.com/openai/codex/actions/runs/17417194663" # rust-v0.28.0
+WORKFLOW_URL="https://github.com/openai/codex/actions/runs/17417194663" # default; overridden by --workflow-url
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -70,7 +70,13 @@ ARTIFACTS_DIR="$(mktemp -d)"
 trap 'rm -rf "$ARTIFACTS_DIR"' EXIT
 
 # NB: The GitHub CLI `gh` must be installed and authenticated.
-gh run download --dir "$ARTIFACTS_DIR" --repo openai/codex "$WORKFLOW_ID"
+# Determine the repo from the workflow URL (owner/repo), fallback to openai/codex.
+REPO_FROM_URL="$(printf "%s" "$WORKFLOW_URL" | sed -E 's#https://github.com/([^/]+/[^/]+)/actions/runs/.*#\1#')"
+if [[ -z "$REPO_FROM_URL" || "$REPO_FROM_URL" == "$WORKFLOW_URL" ]]; then
+  REPO_FROM_URL="openai/codex"
+fi
+
+gh run download --dir "$ARTIFACTS_DIR" --repo "$REPO_FROM_URL" "$WORKFLOW_ID"
 
 # x64 Linux
 zstd -d "$ARTIFACTS_DIR/x86_64-unknown-linux-musl/codex-x86_64-unknown-linux-musl.zst" \
