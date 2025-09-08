@@ -53,6 +53,19 @@ use unicode_width::UnicodeWidthStr;
 /// placeholder in the UI.
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 
+fn hidden_token_from_id(mut id: u64) -> String {
+    const CHARS: [char; 4] = ['\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}'];
+    if id == 0 {
+        return CHARS[0].into();
+    }
+    let mut out = String::new();
+    while id > 0 {
+        out.push(CHARS[(id & 3) as usize]);
+        id >>= 2;
+    }
+    out
+}
+
 /// Result returned when the user interacts with the text area.
 #[derive(Debug, PartialEq)]
 pub enum InputResult {
@@ -85,6 +98,7 @@ pub(crate) struct ChatComposer {
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
     pending_pastes: Vec<(String, String)>,
+    next_paste_id: u64,
     token_usage_info: Option<TokenUsageInfo>,
     has_focus: bool,
     attached_images: Vec<AttachedImage>,
@@ -126,6 +140,7 @@ impl ChatComposer {
             dismissed_file_popup_token: None,
             current_file_query: None,
             pending_pastes: Vec::new(),
+            next_paste_id: 0,
             token_usage_info: None,
             has_focus: has_input_focus,
             attached_images: Vec::new(),
@@ -211,7 +226,9 @@ impl ChatComposer {
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         let char_count = pasted.chars().count();
         if char_count > LARGE_PASTE_CHAR_THRESHOLD {
-            let placeholder = format!("[Pasted Content {char_count} chars]");
+            let token = hidden_token_from_id(self.next_paste_id);
+            self.next_paste_id += 1;
+            let placeholder = format!("[Pasted Content {char_count} chars]{token}");
             self.textarea.insert_element(&placeholder);
             self.pending_pastes.push((placeholder, pasted));
         } else if char_count > 1 && self.handle_paste_image_path(pasted.clone()) {
@@ -1770,7 +1787,9 @@ mod tests {
         let large = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 10);
         let needs_redraw = composer.handle_paste(large.clone());
         assert!(needs_redraw);
-        let placeholder = format!("[Pasted Content {} chars]", large.chars().count());
+        let placeholder = composer.pending_pastes[0].0.clone();
+        let expected_prefix = format!("[Pasted Content {} chars]", large.chars().count());
+        assert!(placeholder.starts_with(&expected_prefix));
         assert_eq!(composer.textarea.text(), placeholder);
         assert_eq!(composer.pending_pastes.len(), 1);
         assert_eq!(composer.pending_pastes[0].0, placeholder);
@@ -2109,51 +2128,41 @@ mod tests {
             ("y".repeat(LARGE_PASTE_CHAR_THRESHOLD + 7), true),
         ];
 
-        // Expected states after each paste
-        let mut expected_text = String::new();
-        let mut expected_pending_count = 0;
-
-        // Apply all pastes and build expected state
+        // Apply all pastes and capture actual states
         let states: Vec<_> = test_cases
             .iter()
-            .map(|(content, is_large)| {
+            .map(|(content, _)| {
                 composer.handle_paste(content.clone());
-                if *is_large {
-                    let placeholder = format!("[Pasted Content {} chars]", content.chars().count());
-                    expected_text.push_str(&placeholder);
-                    expected_pending_count += 1;
-                } else {
-                    expected_text.push_str(content);
-                }
-                (expected_text.clone(), expected_pending_count)
+                (
+                    composer.textarea.text().to_string(),
+                    composer.pending_pastes.len(),
+                )
             })
             .collect();
 
-        // Verify all intermediate states were correct
-        assert_eq!(
-            states,
-            vec![
-                (
-                    format!("[Pasted Content {} chars]", test_cases[0].0.chars().count()),
-                    1
-                ),
-                (
-                    format!(
-                        "[Pasted Content {} chars] and ",
-                        test_cases[0].0.chars().count()
-                    ),
-                    1
-                ),
-                (
-                    format!(
-                        "[Pasted Content {} chars] and [Pasted Content {} chars]",
-                        test_cases[0].0.chars().count(),
-                        test_cases[2].0.chars().count()
-                    ),
-                    2
-                ),
-            ]
-        );
+        // Verify intermediate states
+        assert_eq!(states[0].1, 1);
+        assert!(states[0].0.starts_with(&format!(
+            "[Pasted Content {} chars]",
+            test_cases[0].0.chars().count()
+        )));
+        assert_eq!(states[1].1, 1);
+        assert!(states[1].0.starts_with(&format!(
+            "[Pasted Content {} chars]",
+            test_cases[0].0.chars().count()
+        )));
+        assert!(states[1].0.ends_with(" and "));
+        assert_eq!(states[2].1, 2);
+        let parts: Vec<&str> = states[2].0.split(" and ").collect();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].starts_with(&format!(
+            "[Pasted Content {} chars]",
+            test_cases[0].0.chars().count()
+        )));
+        assert!(parts[1].starts_with(&format!(
+            "[Pasted Content {} chars]",
+            test_cases[2].0.chars().count()
+        )));
 
         // Submit and verify final expansion
         let (result, _) =
@@ -2181,60 +2190,30 @@ mod tests {
             false,
         );
 
-        // Define test cases: (content, is_large)
-        let test_cases = [
-            ("a".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5), true),
-            (" and ".to_string(), false),
-            ("b".repeat(LARGE_PASTE_CHAR_THRESHOLD + 6), true),
-        ];
+        let large_a = "a".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
+        let connector = " and ".to_string();
+        let large_b = "b".repeat(LARGE_PASTE_CHAR_THRESHOLD + 6);
 
-        // Apply all pastes
-        let mut current_pos = 0;
-        let states: Vec<_> = test_cases
-            .iter()
-            .map(|(content, is_large)| {
-                composer.handle_paste(content.clone());
-                if *is_large {
-                    let placeholder = format!("[Pasted Content {} chars]", content.chars().count());
-                    current_pos += placeholder.len();
-                } else {
-                    current_pos += content.len();
-                }
-                (
-                    composer.textarea.text().to_string(),
-                    composer.pending_pastes.len(),
-                    current_pos,
-                )
-            })
-            .collect();
+        composer.handle_paste(large_a);
+        let placeholder1 = composer.pending_pastes[0].0.clone();
+        composer.handle_paste(connector.clone());
+        composer.handle_paste(large_b);
+        let placeholder2 = composer.pending_pastes[1].0.clone();
 
-        // Delete placeholders one by one and collect states
-        let mut deletion_states = vec![];
-
-        // First deletion
-        composer.textarea.set_cursor(states[0].2);
+        // Delete first placeholder
+        let idx = composer.textarea.text().find(&placeholder1).unwrap() + placeholder1.len();
+        composer.textarea.set_cursor(idx);
         composer.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        deletion_states.push((
-            composer.textarea.text().to_string(),
-            composer.pending_pastes.len(),
-        ));
+        assert_eq!(composer.pending_pastes.len(), 1);
+        let text = composer.textarea.text().to_string();
+        assert!(text.starts_with(&connector));
+        assert!(text.ends_with(&placeholder2));
 
-        // Second deletion
+        // Delete second placeholder
         composer.textarea.set_cursor(composer.textarea.text().len());
         composer.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        deletion_states.push((
-            composer.textarea.text().to_string(),
-            composer.pending_pastes.len(),
-        ));
-
-        // Verify all states
-        assert_eq!(
-            deletion_states,
-            vec![
-                (" and [Pasted Content 1006 chars]".to_string(), 1),
-                (" and ".to_string(), 0),
-            ]
-        );
+        assert_eq!(composer.pending_pastes.len(), 0);
+        assert_eq!(composer.textarea.text(), connector);
     }
 
     #[test]
@@ -2316,12 +2295,12 @@ mod tests {
         ];
 
         let paste = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
-        let placeholder = format!("[Pasted Content {} chars]", paste.chars().count());
 
         let states: Vec<_> = test_cases
             .into_iter()
             .map(|pos_from_end| {
                 composer.handle_paste(paste.clone());
+                let placeholder = composer.pending_pastes[0].0.clone();
                 composer
                     .textarea
                     .set_cursor(placeholder.len() - pos_from_end);
@@ -2331,6 +2310,7 @@ mod tests {
                     composer.pending_pastes.len(),
                 );
                 composer.textarea.set_text("");
+                composer.pending_pastes.clear();
                 result
             })
             .collect();
@@ -2777,10 +2757,11 @@ mod tests {
         let flushed = composer.flush_paste_burst_if_due();
         assert!(flushed, "expected flush after stopping fast input");
 
-        let expected_placeholder = format!("[Pasted Content {count} chars]");
-        assert_eq!(composer.textarea.text(), expected_placeholder);
+        let placeholder = composer.pending_pastes[0].0.clone();
+        assert!(placeholder.starts_with(&format!("[Pasted Content {count} chars]")));
+        assert_eq!(composer.textarea.text(), placeholder);
         assert_eq!(composer.pending_pastes.len(), 1);
-        assert_eq!(composer.pending_pastes[0].0, expected_placeholder);
+        assert_eq!(composer.pending_pastes[0].0, placeholder);
         assert_eq!(composer.pending_pastes[0].1.len(), count);
         assert!(composer.pending_pastes[0].1.chars().all(|c| c == 'x'));
     }
