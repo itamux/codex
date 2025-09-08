@@ -18,7 +18,7 @@ pub struct CustomPrompt {
 }
 
 /// Scope for a discovered custom prompt.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum PromptScope {
     Project,
@@ -32,7 +32,7 @@ pub enum PromptScope {
 /// The `description` and `argument_hint` fields may be extracted from optional
 /// YAML frontmatter in the prompt file (handled by `codex-core`). When no
 /// frontmatter is present or keys are missing, these remain `None`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
 pub struct CustomPromptMeta {
     pub name: String,
     pub path: PathBuf,
