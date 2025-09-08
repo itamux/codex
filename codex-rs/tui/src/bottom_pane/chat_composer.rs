@@ -2239,10 +2239,6 @@ mod tests {
 
     #[test]
     fn argument_hint_placeholder_shows_only_with_single_space() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyModifiers;
-
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(
@@ -2275,7 +2271,7 @@ mod tests {
         let mut has_hint_for = |text: &str| -> bool {
             composer.set_text_content(text.to_string());
             let mut buf = ratatui::buffer::Buffer::empty(area);
-            (&composer).render_ref(area, &mut buf);
+            composer.render_ref(area, &mut buf);
             let mut acc = String::new();
             for y in 0..area.height {
                 for x in 0..area.width {

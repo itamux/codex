@@ -15,6 +15,7 @@ pub enum SlashCommand {
     Model,
     Approvals,
     New,
+    Resume,
     Init,
     Compact,
     Diff,
@@ -32,6 +33,7 @@ impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
             SlashCommand::New => "start a new chat during a conversation",
+            SlashCommand::Resume => "resume a previous session",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Quit => "exit Codex",
@@ -57,6 +59,7 @@ impl SlashCommand {
     pub fn available_during_task(self) -> bool {
         match self {
             SlashCommand::New
+            | SlashCommand::Resume
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Model

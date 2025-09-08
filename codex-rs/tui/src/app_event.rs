@@ -16,6 +16,9 @@ pub(crate) enum AppEvent {
     /// Start a new session.
     NewSession,
 
+    /// Open the resume picker and replace the current session based on selection.
+    OpenResumePicker,
+
     /// Request to exit the application gracefully.
     ExitRequest,
 
