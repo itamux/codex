@@ -84,17 +84,24 @@ pub fn project_prompts_dir(project_root: &Path) -> PathBuf {
 }
 
 /// If `cwd` points inside `.codex/prompts`, adjust to the project root by
-/// ascending two directories; otherwise prefer the Git repo root when available.
+/// ascending to the ancestor before `.codex/prompts`; otherwise prefer the Git repo root when available.
 fn project_root_from_cwd(cwd: &Path) -> PathBuf {
-    let mut root = crate::git_info::get_git_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    if root.file_name().map(|n| n == "prompts").unwrap_or(false)
-        && let Some(parent) = root.parent()
-        && parent.file_name().map(|n| n == ".codex").unwrap_or(false)
-        && let Some(grand) = parent.parent()
-    {
-        root = grand.to_path_buf();
+    // Prefer Git repo root when available.
+    if let Some(repo_root) = crate::git_info::get_git_repo_root(cwd) {
+        return repo_root;
     }
-    root
+    // Otherwise, if anywhere under `<project>/.codex/prompts[/...]`, ascend to `<project>`.
+    for anc in cwd.ancestors() {
+        if anc.file_name().is_some_and(|n| n == "prompts")
+            && anc
+                .parent()
+                .is_some_and(|p| p.file_name().is_some_and(|n| n == ".codex"))
+            && let Some(project) = anc.parent().and_then(|p| p.parent())
+        {
+            return project.to_path_buf();
+        }
+    }
+    cwd.to_path_buf()
 }
 
 /// Best-effort fallback to locate a `user/prompts` directory for tests that
@@ -545,6 +552,15 @@ mod tests {
         let missing = tmp.path().join("nope");
         let found = discover_prompts_in(&missing).await;
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn project_root_detects_nesting_under_prompts() {
+        let tmp = tempdir().expect("create TempDir");
+        let project = tmp.path().join("project");
+        let nested = project.join(".codex/prompts/ns");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(super::project_root_from_cwd(&nested), project);
     }
 
     #[tokio::test]
