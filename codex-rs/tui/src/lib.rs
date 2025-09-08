@@ -291,7 +291,7 @@ async fn run_ratatui_app(
         } else {
             lines.push(Line::from(vec![
                 "See ".into(),
-                "https://github.com/openai/codex/releases/latest".cyan(),
+                "https://github.com/itamux/codex/releases/latest".cyan(),
                 " for the latest releases and installation options.".into(),
             ]));
         }
