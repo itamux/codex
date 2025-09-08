@@ -91,12 +91,12 @@ fn project_root_from_cwd(cwd: &Path) -> PathBuf {
         return repo_root;
     }
     // Otherwise, if anywhere under `<project>/.codex/prompts[/...]`, ascend to `<project>`.
-    for anc in cwd.ancestors() {
-        if anc.file_name().is_some_and(|n| n == "prompts")
-            && anc
+    for ancestor in cwd.ancestors() {
+        if ancestor.file_name().is_some_and(|n| n == "prompts")
+            && ancestor
                 .parent()
                 .is_some_and(|p| p.file_name().is_some_and(|n| n == ".codex"))
-            && let Some(project) = anc.parent().and_then(|p| p.parent())
+            && let Some(project) = ancestor.parent().and_then(|p| p.parent())
         {
             return project.to_path_buf();
         }
