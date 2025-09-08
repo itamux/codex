@@ -395,6 +395,51 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
     out
 }
 
+/// Returns true if `content` contains any `$ARGUMENTS` or positional `$1..$n`
+/// placeholders that would be expanded by [`expand_arguments`].
+pub fn contains_argument_placeholders(content: &str) -> bool {
+    // Fast path
+    if content.contains("$ARGUMENTS") {
+        return true;
+    }
+    // Scan for `$` followed by at least one ASCII digit.
+    let bytes = content.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Expands arguments like [`expand_arguments`]. If no placeholders are found
+/// in the prompt content but the caller provided arguments, appends them to the
+/// end of the prompt as a separate paragraph in the form:
+///
+/// "\n\nArguments: <arguments>"
+pub fn expand_arguments_or_append(content: &str, args: &[String], rest: &str) -> String {
+    let used_placeholders = contains_argument_placeholders(content);
+    let mut expanded = expand_arguments(content, args, rest);
+
+    // If the prompt doesn't define placeholders but arguments were provided,
+    // append them to the end for visibility.
+    let has_args = !rest.trim().is_empty() || !args.is_empty();
+    if !used_placeholders && has_args {
+        // Prefer the raw trailing text if available; otherwise join positionals.
+        let appended = if !rest.trim().is_empty() {
+            rest.trim()
+        } else {
+            // Join with single spaces to mirror typical shell splitting.
+            // Keep as a String for formatting below.
+            return format!("{expanded}\n\nArguments: {}", args.join(" "));
+        };
+        expanded = format!("{expanded}\n\nArguments: {appended}");
+    }
+    expanded
+}
+
 /// Parse optional YAML frontmatter and return a tuple of (meta, body).
 ///
 /// - If input starts with a line that is exactly `---` (allowing either `\n` or `\r\n` EOL),

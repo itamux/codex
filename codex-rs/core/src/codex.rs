@@ -45,7 +45,7 @@ use crate::config::Config;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
 use crate::conversation_manager::InitialHistory;
-use crate::custom_prompts::expand_arguments;
+use crate::custom_prompts::expand_arguments_or_append;
 use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
@@ -1305,7 +1305,7 @@ async fn submission_loop(
                 let mut items: Vec<InputItem> = Vec::new();
                 match tokio::fs::read_to_string(&path).await {
                     Ok(content) => {
-                        let expanded = expand_arguments(&content, &args, &rest);
+                        let expanded = expand_arguments_or_append(&content, &args, &rest);
                         items.push(InputItem::Text { text: expanded });
                     }
                     Err(e) => {
