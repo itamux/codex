@@ -81,15 +81,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: actions/cache@v4
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ${{ github.workspace }}/codex-rs/target/
-          key: cargo-${{ matrix.runner }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          workspaces: codex-rs -> target
+          save-if: ${{ github.ref_type == 'tag' || github.event_name == 'pull_request' }}
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.5
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=1" >> $GITHUB_ENV
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Install musl build tools
@@ -98,6 +103,11 @@ jobs:
 
       - name: Cargo build
         run: cargo build --target ${{ matrix.target }} --release --bin codex
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+        shell: bash
 
       - name: Stage artifacts
         shell: bash
@@ -152,7 +162,7 @@ jobs:
 
             # Also create .zst (existing behaviour) *and* remove the original
             # uncompressed binary to keep the directory small.
-            zstd -T0 -19 --rm "$dest/$base"
+            zstd -T0 -17 --rm "$dest/$base"
           done
 
       - uses: actions/upload-artifact@v4
