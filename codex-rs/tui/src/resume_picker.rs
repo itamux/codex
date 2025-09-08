@@ -41,9 +41,10 @@ pub async fn run_resume_picker(tui: &mut Tui, codex_home: &Path) -> Result<Resum
     let alt = AltScreenGuard::enter(tui);
     let mut state = PickerState::new(codex_home.to_path_buf(), alt.tui.frame_requester());
     state.load_page(None).await?;
-    state.request_frame();
-
+    // Subscribe to Draw events before requesting the initial frame to avoid
+    // missing the first render due to the broadcast channel semantics.
     let mut events = alt.tui.event_stream();
+    state.request_frame();
     while let Some(ev) = events.next().await {
         match ev {
             TuiEvent::Key(key) => {

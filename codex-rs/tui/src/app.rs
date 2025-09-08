@@ -202,6 +202,47 @@ impl App {
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::OpenResumePicker => {
+                match crate::resume_picker::run_resume_picker(tui, &self.config.codex_home).await? {
+                    crate::resume_picker::ResumeSelection::Exit => {
+                        return Ok(false);
+                    }
+                    crate::resume_picker::ResumeSelection::StartFresh => {
+                        let init = crate::chatwidget::ChatWidgetInit {
+                            config: self.config.clone(),
+                            frame_requester: tui.frame_requester(),
+                            app_event_tx: self.app_event_tx.clone(),
+                            initial_prompt: None,
+                            initial_images: Vec::new(),
+                            enhanced_keys_supported: self.enhanced_keys_supported,
+                        };
+                        self.chat_widget = ChatWidget::new(init, self.server.clone());
+                        tui.frame_requester().schedule_frame();
+                    }
+                    crate::resume_picker::ResumeSelection::Resume(path) => {
+                        let mut cfg = self.config.clone();
+                        cfg.experimental_resume = Some(path.clone());
+                        let resumed =
+                            self.server.new_conversation(cfg).await.wrap_err_with(|| {
+                                format!("Failed to resume session from {}", path.display())
+                            })?;
+                        let init = crate::chatwidget::ChatWidgetInit {
+                            config: self.config.clone(),
+                            frame_requester: tui.frame_requester(),
+                            app_event_tx: self.app_event_tx.clone(),
+                            initial_prompt: None,
+                            initial_images: Vec::new(),
+                            enhanced_keys_supported: self.enhanced_keys_supported,
+                        };
+                        self.chat_widget = ChatWidget::new_from_existing(
+                            init,
+                            resumed.conversation,
+                            resumed.session_configured,
+                        );
+                        tui.frame_requester().schedule_frame();
+                    }
+                }
+            }
             AppEvent::InsertHistoryCell(cell) => {
                 let mut cell_transcript = cell.transcript_lines();
                 if !cell.is_stream_continuation() && !self.transcript_lines.is_empty() {

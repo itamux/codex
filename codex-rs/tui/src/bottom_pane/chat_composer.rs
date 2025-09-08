@@ -2239,10 +2239,6 @@ mod tests {
 
     #[test]
     fn argument_hint_placeholder_shows_only_with_single_space() {
-        
-        
-        
-
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(
