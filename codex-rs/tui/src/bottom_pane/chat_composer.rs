@@ -531,9 +531,9 @@ impl ChatComposer {
                                     },
                                 ));
                             }
-                            // Parse `/name …` using the full composer text. Build args from the
-                            // first line remainder; build rest from the remainder plus all
-                            // subsequent lines verbatim.
+                            // Parse `/name …` using the full composer text.
+                            // `args` comes from the remainder of the first line.
+                            // `rest` combines that remainder with all subsequent lines verbatim.
                             let mut args: Vec<String> = Vec::new();
                             let mut rest = String::new();
 
@@ -2239,9 +2239,9 @@ mod tests {
 
     #[test]
     fn argument_hint_placeholder_shows_only_with_single_space() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyModifiers;
+        
+        
+        
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
@@ -2275,7 +2275,7 @@ mod tests {
         let mut has_hint_for = |text: &str| -> bool {
             composer.set_text_content(text.to_string());
             let mut buf = ratatui::buffer::Buffer::empty(area);
-            (&composer).render_ref(area, &mut buf);
+            composer.render_ref(area, &mut buf);
             let mut acc = String::new();
             for y in 0..area.height {
                 for x in 0..area.width {
