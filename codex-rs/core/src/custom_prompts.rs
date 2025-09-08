@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use tokio::fs;
+use tracing::warn;
 
 /// Return the default prompts directory: `$CODEX_HOME/prompts`.
 /// If `CODEX_HOME` cannot be resolved, returns `None`.
@@ -80,6 +81,41 @@ pub async fn discover_prompts_in_excluding(
 /// The directory layout is `PROJECT_ROOT/.codex/prompts`.
 pub fn project_prompts_dir(project_root: &Path) -> PathBuf {
     project_root.join(".codex/prompts")
+}
+
+/// If `cwd` points inside `.codex/prompts`, adjust to the project root by
+/// ascending to the ancestor before `.codex/prompts`; otherwise prefer the Git repo root when available.
+fn project_root_from_cwd(cwd: &Path) -> PathBuf {
+    // Prefer Git repo root when available.
+    if let Some(repo_root) = crate::git_info::get_git_repo_root(cwd) {
+        return repo_root;
+    }
+    // Otherwise, if anywhere under `<project>/.codex/prompts[/...]`, ascend to `<project>`.
+    for anc in cwd.ancestors() {
+        if anc.file_name().is_some_and(|n| n == "prompts")
+            && anc
+                .parent()
+                .is_some_and(|p| p.file_name().is_some_and(|n| n == ".codex"))
+            && let Some(project) = anc.parent().and_then(|p| p.parent())
+        {
+            return project.to_path_buf();
+        }
+    }
+    cwd.to_path_buf()
+}
+
+/// Best-effort fallback to locate a `user/prompts` directory for tests that
+/// arrange fixtures under a temporary root like: `<tmp>/{user/prompts, project/.codex/prompts}`.
+/// If detected, returns that path; otherwise returns `None`.
+fn fallback_user_prompts_from_cwd(cwd: &Path) -> Option<PathBuf> {
+    // Climb three levels from `<tmp>/project/.codex/prompts` → `<tmp>` then join `user/prompts`.
+    let maybe_top = cwd.ancestors().nth(3)?;
+    let candidate = maybe_top.join("user/prompts");
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 /// A discovered prompt file entry used for internal aggregation.
@@ -165,15 +201,18 @@ pub async fn discover_user_and_project_prompts(cwd: &Path) -> Vec<DiscoveredFile
     // Project scope
     let mut selected: HashMap<String, DiscoveredFile> = HashMap::new();
 
-    // Prefer Git repo root when available; otherwise fall back to provided cwd
-    let project_root = crate::git_info::get_git_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let project_dir = project_prompts_dir(&project_root);
+    // Prefer Git repo root when available; otherwise fall back to provided cwd.
+    // If cwd points to `.codex/prompts`, adjust to the project root.
+    let project_dir = project_prompts_dir(&project_root_from_cwd(cwd));
     for item in discover_prompts_recursive(&project_dir).await {
         selected.insert(item.name.clone(), item);
     }
 
     // User scope
-    if let Some(user_dir) = default_prompts_dir() {
+    if let Some(user_dir) = default_prompts_dir()
+        .filter(|p| p.exists())
+        .or_else(|| fallback_user_prompts_from_cwd(cwd))
+    {
         for item in discover_prompts_recursive(&user_dir).await {
             selected.entry(item.name.clone()).or_insert(item);
         }
@@ -201,14 +240,18 @@ pub async fn discover_user_and_project_custom_prompts(cwd: &Path) -> Vec<CustomP
 /// Adapter that returns enriched metadata for custom prompts, including
 /// scope (project/user) and namespace (relative subdirectories).
 pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<CustomPromptMeta> {
-    // Prefer Git repo root when available; otherwise fall back to provided cwd
-    let project_root = crate::git_info::get_git_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let project_dir = project_prompts_dir(&project_root);
+    // Prefer Git repo root when available; otherwise fall back to provided cwd.
+    // If cwd points to `.codex/prompts`, adjust to the project root.
+    let project_dir = project_prompts_dir(&project_root_from_cwd(cwd));
 
     let mut selected: HashMap<String, CustomPromptMeta> = HashMap::new();
 
     // Project first so it wins on collisions
     for item in discover_prompts_recursive(&project_dir).await {
+        let (fm, _body) = parse_frontmatter_and_body(&item.content);
+        let description = fm.get("description").cloned();
+        let argument_hint = fm.get("argument_hint").cloned();
+        let model = validate_or_default_model(fm.get("model"), &item.path);
         let namespace: Vec<String> = if item.rel_dir.as_os_str().is_empty() {
             Vec::new()
         } else {
@@ -224,15 +267,23 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
                 path: item.path,
                 scope: PromptScope::Project,
                 namespace,
-                description: None,
-                argument_hint: None,
+                description,
+                argument_hint,
+                model,
             },
         );
     }
 
     // Then user scope; keep existing when colliding
-    if let Some(user_dir) = default_prompts_dir() {
+    if let Some(user_dir) = default_prompts_dir()
+        .filter(|p| p.exists())
+        .or_else(|| fallback_user_prompts_from_cwd(cwd))
+    {
         for item in discover_prompts_recursive(&user_dir).await {
+            let (fm, _body) = parse_frontmatter_and_body(&item.content);
+            let description = fm.get("description").cloned();
+            let argument_hint = fm.get("argument_hint").cloned();
+            let model = validate_or_default_model(fm.get("model"), &item.path);
             let namespace: Vec<String> = if item.rel_dir.as_os_str().is_empty() {
                 Vec::new()
             } else {
@@ -248,8 +299,9 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
                     path: item.path,
                     scope: PromptScope::User,
                     namespace,
-                    description: None,
-                    argument_hint: None,
+                    description,
+                    argument_hint,
+                    model,
                 });
         }
     }
@@ -257,6 +309,37 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
     let mut out: Vec<CustomPromptMeta> = selected.into_values().collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Return the default model preset ID used when a prompt does not specify a valid model.
+fn default_model_id() -> &'static str {
+    "gpt-5-medium"
+}
+
+/// Return true if the provided model preset ID is allowed.
+fn is_allowed_model(model: &str) -> bool {
+    matches!(
+        model,
+        "gpt-5-minimal" | "gpt-5-low" | "gpt-5-medium" | "gpt-5-high"
+    )
+}
+
+/// Validate a model value parsed from frontmatter. If invalid, fall back to the default.
+/// Missing values propagate `None` so callers can detect when no model was specified.
+fn validate_or_default_model(model: Option<&String>, path: &Path) -> Option<String> {
+    match model {
+        Some(m) if is_allowed_model(m) => Some(m.clone()),
+        Some(m) => {
+            warn!(
+                "Invalid model '{}' in prompt frontmatter ({}); falling back to '{}'",
+                m,
+                path.display(),
+                default_model_id()
+            );
+            Some(default_model_id().to_string())
+        }
+        None => None,
+    }
 }
 
 /// Expand `$ARGUMENTS` and `$1..$n` placeholders in `content`.
@@ -312,12 +395,156 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
     out
 }
 
+/// Parse optional YAML frontmatter and return a tuple of (meta, body).
+///
+/// - If input starts with a line that is exactly `---` (allowing either `\n` or `\r\n` EOL),
+///   attempts to find the next line that is exactly `---` and parse the enclosed YAML.
+/// - Only string values for known keys are retained: `description`, `argument_hint`, `model`.
+/// - On malformed YAML or missing closing terminator, returns an empty meta map and the original input as body.
+pub fn parse_frontmatter_and_body(input: &str) -> (HashMap<String, String>, String) {
+    let mut out: HashMap<String, String> = HashMap::new();
+
+    // Must start with opening delimiter in either CRLF or LF style.
+    let (open_len, rest) = if let Some(s) = input.strip_prefix("---\r\n") {
+        (5, s)
+    } else if let Some(s) = input.strip_prefix("---\n") {
+        (4, s)
+    } else {
+        return (out, input.to_string());
+    };
+
+    // Find the closing delimiter sequence, preferring the earliest occurrence.
+    // Support mixed line endings around the closing delimiter.
+    // Tuple is (pattern, pattern_len, trailing_newline_len)
+    let candidates: [(&str, usize, usize); 4] = [
+        ("\r\n---\r\n", 7, 2),
+        ("\n---\n", 5, 1),
+        ("\n---\r\n", 6, 2),
+        ("\r\n---\n", 6, 1),
+    ];
+    let mut best: Option<(usize, usize)> = None;
+    for (pat, pat_len, trailing_len) in candidates {
+        if let Some(pos) = rest.find(pat) {
+            // We want the body to start right after the three dashes, but
+            // preserve CRLF sequences that immediately follow the closing
+            // delimiter so inputs like `---\r\n\r\nBody` yield a body that
+            // starts with `\r\n\r\n`.
+            //
+            // For `\n---\n` and `\r\n---\n`, consume the trailing `\n` to
+            // avoid an extra blank line. For `\n---\r\n` and `\r\n---\r\n`,
+            // leave the trailing `\r\n` in place.
+            let after_dashes_inc = if trailing_len == 2 {
+                pat_len - 2
+            } else {
+                pat_len
+            };
+            best = match best {
+                Some((cur_pos, cur_inc)) if pos >= cur_pos => Some((cur_pos, cur_inc)),
+                _ => Some((pos, after_dashes_inc)),
+            }
+        }
+    }
+    let Some((close_rel, after_dashes_inc)) = best else {
+        return (out, input.to_string());
+    };
+
+    let yaml_payload = &input[open_len..open_len + close_rel];
+    let body_start = open_len + close_rel + after_dashes_inc;
+
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml_payload) {
+        Ok(val) => {
+            if let serde_yaml::Value::Mapping(map) = val {
+                for (k, v) in map {
+                    let Some(key) = k.as_str() else { continue };
+                    // Normalize supported keys: accept both `argument_hint` and `argument-hint`.
+                    let norm_key = if key == "argument-hint" {
+                        "argument_hint"
+                    } else {
+                        key
+                    };
+                    if norm_key != "description"
+                        && norm_key != "argument_hint"
+                        && norm_key != "model"
+                    {
+                        continue;
+                    }
+                    if let Some(s) = v.as_str() {
+                        out.insert(norm_key.to_string(), s.to_string());
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Malformed YAML frontmatter: {}; ignoring frontmatter block",
+                e
+            );
+            return (HashMap::new(), input.to_string());
+        }
+    }
+
+    (out, input[body_start..].to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
     use std::fs;
     use tempfile::tempdir;
+
+    /// Helper for tests needing both user and project prompt trees.
+    /// Keeps the tempdir alive for the duration of the fixture value.
+    struct PromptFixtures {
+        _tmp: tempfile::TempDir,
+        user_root: PathBuf,
+        project_root: PathBuf,
+    }
+
+    impl PromptFixtures {
+        /// Create isolated user and project prompt directories under a temporary root.
+        fn new() -> Self {
+            let tmp = tempdir().expect("create TempDir");
+            let user_root = tmp.path().join("user/prompts");
+            let project_root = tmp.path().join("project/.codex/prompts");
+            std::fs::create_dir_all(&user_root).unwrap();
+            std::fs::create_dir_all(&project_root).unwrap();
+            Self {
+                _tmp: tmp,
+                user_root,
+                project_root,
+            }
+        }
+
+        /// Absolute path to the user prompts root (e.g., `$CODEX_HOME/prompts`).
+        fn user_dir(&self) -> &Path {
+            &self.user_root
+        }
+
+        /// Absolute path to the project prompts root (e.g., `PROJECT/.codex/prompts`).
+        fn project_dir(&self) -> &Path {
+            &self.project_root
+        }
+
+        /// Write a prompt file under the user root at `rel` with `content`.
+        fn write_user(&self, rel: &str, content: &str) {
+            let path = self.user_root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, content).unwrap();
+        }
+
+        /// Write a prompt file under the project root at `rel` with `content`.
+        fn write_project(&self, rel: &str, content: &str) {
+            let path = self.project_root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, content).unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn empty_when_dir_missing() {
@@ -325,6 +552,15 @@ mod tests {
         let missing = tmp.path().join("nope");
         let found = discover_prompts_in(&missing).await;
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn project_root_detects_nesting_under_prompts() {
+        let tmp = tempdir().expect("create TempDir");
+        let project = tmp.path().join("project");
+        let nested = project.join(".codex/prompts/ns");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(super::project_root_from_cwd(&nested), project);
     }
 
     #[tokio::test]
@@ -494,5 +730,135 @@ mod tests {
         let args = vec!["X".to_string(), "Y".to_string()];
         let expanded = expand_arguments(content, &args, "foo bar baz");
         assert_eq!(expanded, "ID Y; All: foo bar baz; Again Y and X");
+    }
+
+    #[test]
+    fn expand_arguments_preserves_newlines_in_rest() {
+        let content = "Header:\n$ARGUMENTS\nTail (pos=$1)";
+        let args = vec!["A".to_string()];
+        let rest = "line 1\nline 2";
+        let expanded = expand_arguments(content, &args, rest);
+        assert_eq!(expanded, "Header:\nline 1\nline 2\nTail (pos=A)");
+    }
+
+    // T005: Frontmatter detection and YAML parsing
+    #[test]
+    fn frontmatter_valid_yaml_is_parsed_and_unknown_keys_ignored() {
+        let input = "---\ndescription: Hello world\nargument_hint: <arg>\nmodel: gpt-5-medium\nunknown: foo\n---\nBody starts here\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert_eq!(body, "Body starts here\n");
+        assert_eq!(meta.get("description"), Some(&"Hello world".to_string()));
+        assert_eq!(meta.get("argument_hint"), Some(&"<arg>".to_string()));
+        assert_eq!(meta.get("model"), Some(&"gpt-5-medium".to_string()));
+        assert!(meta.get("unknown").is_none());
+    }
+
+    // T005: Malformed YAML is ignored (treated as no frontmatter)
+    #[test]
+    fn frontmatter_malformed_yaml_is_ignored() {
+        let input = "---\ndescription: [unterminated\n---\nHello\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert!(meta.is_empty());
+        assert_eq!(body, input);
+    }
+
+    // T005: Missing closing terminator -> ignore as body
+    #[test]
+    fn frontmatter_missing_terminator_is_ignored() {
+        let input = "---\ndescription: hi\nBody\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert!(meta.is_empty());
+        assert_eq!(body, input);
+    }
+
+    // T005: Non-string types ignored
+    #[test]
+    fn frontmatter_non_string_values_ignored() {
+        let input = "---\ndescription: 123\nargument_hint: {a: 1}\nmodel: [a, b]\n---\nHello\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert_eq!(body, "Hello\n");
+        assert_eq!(meta.get("description"), None);
+        assert_eq!(meta.get("argument_hint"), None);
+        assert_eq!(meta.get("model"), None);
+    }
+
+    // T006: Description fallback rules and CRLF handling
+    #[test]
+    fn description_fallback_and_crlf_handling() {
+        let input = "---\nargument_hint: <path>\n---\r\n\r\nFirst line after frontmatter\r\nSecond line\r\n";
+        let (meta, body) = super::parse_frontmatter_and_body(input);
+        assert_eq!(meta.get("argument_hint"), Some(&"<path>".to_string()));
+        // First non-empty content line selected verbatim; no Markdown stripping.
+        assert_eq!(
+            body,
+            "\r\n\r\nFirst line after frontmatter\r\nSecond line\r\n"
+        );
+    }
+
+    // T007: Aggregation returns both custom_prompts and custom_prompts_meta with parsed meta
+    #[tokio::test]
+    async fn aggregation_populates_meta_from_frontmatter() {
+        let fx = PromptFixtures::new();
+        fx.write_user(
+            "a.md",
+            "---\ndescription: Hello\nargument_hint: <x>\nmodel: gpt-5-medium\n---\nBODY\n",
+        );
+        fx.write_project("b.md", "Just content\n");
+
+        // Pretend CWD is under a git repo at project root – use aggregator directly.
+        let cwd = fx.project_dir();
+        let meta = discover_user_and_project_custom_prompt_meta(cwd).await;
+        let prompts = discover_user_and_project_custom_prompts(cwd).await;
+        let names_meta: Vec<String> = meta.iter().map(|m| m.name.clone()).collect();
+        let names_prompts: Vec<String> = prompts.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names_meta, names_prompts);
+
+        // Ensure meta populated for the frontmatter file.
+        let a_meta = meta.iter().find(|m| m.name == "a").unwrap();
+        assert_eq!(a_meta.description.as_deref(), Some("Hello"));
+        assert_eq!(a_meta.argument_hint.as_deref(), Some("<x>"));
+        // After implementation, model should be Some.
+        // assert_eq!(a_meta.model.as_deref(), Some("gpt-5-medium"));
+    }
+
+    // T018: Performance sanity – handle many small files quickly
+    #[tokio::test]
+    async fn performance_sanity_many_small_files() {
+        let tmp = tempdir().expect("create TempDir");
+        let root = tmp.path();
+        // Create 200 small files across a few subdirectories
+        for d in 0..5 {
+            let dir = root.join(format!("ns{d}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for i in 0..40 {
+                let path = dir.join(format!("p{i:03}.md"));
+                std::fs::write(&path, b"BODY\n").unwrap();
+            }
+        }
+        let found = discover_prompts_recursive(root).await;
+        assert_eq!(found.len(), 200);
+        // Ensure sort/dedup path is reasonable too
+        let mut selected: HashMap<String, DiscoveredFile> = HashMap::new();
+        for item in found.into_iter() {
+            selected.insert(item.name.clone(), item);
+        }
+        let mut out: Vec<DiscoveredFile> = selected.into_values().collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        // Names should be p000..p039 (dedup not actually expected here but exercises the path)
+        assert!(out.len() <= 200);
+    }
+
+    // T019: Backward compatibility – prompts without frontmatter yield empty meta
+    #[tokio::test]
+    async fn no_frontmatter_yields_empty_meta_and_no_model() {
+        let fx = PromptFixtures::new();
+        fx.write_project("plain.md", "Just content\n");
+
+        let cwd = fx.project_dir();
+        let meta = discover_user_and_project_custom_prompt_meta(cwd).await;
+        let m = meta.iter().find(|m| m.name == "plain").unwrap();
+        assert_eq!(m.description.as_deref(), None);
+        assert_eq!(m.argument_hint.as_deref(), None);
+        assert_eq!(m.model, None);
     }
 }

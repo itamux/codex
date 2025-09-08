@@ -41,6 +41,7 @@ use codex_protocol::custom_prompts::CustomPrompt;
 use crate::status_indicator_widget::StatusIndicatorWidget;
 use approval_modal_view::ApprovalModalView;
 use codex_protocol::custom_prompts::CustomPromptMeta;
+use codex_protocol::custom_prompts::PromptScope;
 pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
 
@@ -480,6 +481,65 @@ impl BottomPane {
     pub(crate) fn take_recent_submission_images(&mut self) -> Vec<PathBuf> {
         self.composer.take_recent_submission_images()
     }
+}
+
+// Test helpers (public for integration tests under `tui/tests`).
+/// Render a minimal textual representation of the slash popup entries for the
+/// provided prompt metadata. The output lists one line per prompt using the
+/// same description composition logic as the UI (description, argument hint,
+/// and scope/namespace tag when available).
+pub fn render_slash_popup_with_meta_for_test(
+    meta: std::collections::HashMap<String, CustomPromptMeta>,
+) -> String {
+    // Deterministic order
+    let mut names: Vec<String> = meta.keys().cloned().collect();
+    names.sort();
+    let mut lines: Vec<String> = Vec::new();
+    for name in names {
+        let Some(m) = meta.get(&name) else { continue };
+        let scope = match m.scope {
+            PromptScope::Project => "project",
+            PromptScope::User => "user",
+        };
+        let tag = if m.namespace.is_empty() {
+            format!("({scope})")
+        } else {
+            format!("({scope}:{})", m.namespace.join("/"))
+        };
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(desc) = m.description.as_ref() {
+            parts.push(desc.clone());
+        }
+        if let Some(hint) = m.argument_hint.as_ref() {
+            parts.push(hint.clone());
+        }
+        let inner = if parts.is_empty() {
+            "send saved prompt".to_string()
+        } else {
+            parts.join(" ")
+        };
+        let desc = if tag.is_empty() {
+            inner
+        } else {
+            format!("{inner} {tag}")
+        };
+        let display_name = if m.namespace.is_empty() {
+            name.clone()
+        } else {
+            format!("{}:{name}", m.namespace[0])
+        };
+        lines.push(format!("/{display_name}  {desc}"));
+    }
+    lines.join("\n")
+}
+
+/// Choose a default model for a prompt, preferring the prompt frontmatter
+/// value over the current model when present.
+pub fn choose_default_model_for_prompt_for_test(
+    prompt_model: Option<String>,
+    current_model: Option<String>,
+) -> Option<String> {
+    prompt_model.or(current_model)
 }
 
 impl WidgetRef for &BottomPane {

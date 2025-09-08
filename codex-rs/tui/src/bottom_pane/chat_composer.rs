@@ -39,6 +39,7 @@ use crate::bottom_pane::textarea::TextAreaState;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
 use crate::key_hint;
+use codex_common::model_presets::builtin_model_presets;
 use codex_file_search::FileMatch;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -46,6 +47,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 /// If the pasted content exceeds this number of characters, replace it with a
 /// placeholder in the UI.
@@ -396,10 +398,21 @@ impl ChatComposer {
                         }
                         CommandItem::UserPrompt(idx) => {
                             if let Some(name) = popup.prompt_name(idx) {
+                                // Prefer namespaced display if available (first component).
+                                let display = if let Some(meta) = self.custom_prompts_meta.get(name)
+                                {
+                                    if let Some(ns) = meta.namespace.first() {
+                                        format!("{ns}:{name}")
+                                    } else {
+                                        name.to_string()
+                                    }
+                                } else {
+                                    name.to_string()
+                                };
                                 let starts_with_cmd =
-                                    first_line.trim_start().starts_with(&format!("/{name}"));
+                                    first_line.trim_start().starts_with(&format!("/{display}"));
                                 if !starts_with_cmd {
-                                    self.textarea.set_text(&format!("/{name} "));
+                                    self.textarea.set_text(&format!("/{display} "));
                                 }
                             }
                         }
@@ -427,16 +440,39 @@ impl ChatComposer {
                     .to_string();
 
                 // Gather selection and path while borrowing popup, then drop the borrow.
-                let (selected, selected_path): (Option<CommandItem>, Option<std::path::PathBuf>) = {
+                let (selected, selected_path, selected_name): (
+                    Option<CommandItem>,
+                    Option<std::path::PathBuf>,
+                    Option<String>,
+                ) = {
                     let sel = popup.selected_item();
                     let path = match sel {
                         Some(CommandItem::UserPrompt(idx)) => popup.prompt_path(idx),
                         _ => None,
                     };
-                    (sel, path)
+                    let name = match sel {
+                        Some(CommandItem::UserPrompt(idx)) => {
+                            popup.prompt_name(idx).map(|s| s.to_string())
+                        }
+                        _ => None,
+                    };
+                    (sel, path, name)
                 };
 
                 if let Some(sel) = selected {
+                    // Capture the full composer text before any mutation so we can
+                    // compute args/rest (and expand placeholders) reliably.
+                    let mut text_full = self.textarea.text().to_string();
+                    // Expand any pending large‑paste placeholders into real content for dispatch.
+                    if !self.pending_pastes.is_empty() {
+                        for (ph, actual) in &self.pending_pastes {
+                            if text_full.contains(ph) {
+                                text_full = text_full.replace(ph, actual);
+                            }
+                        }
+                        // Clear pending placeholders now that we captured the expansion.
+                        self.pending_pastes.clear();
+                    }
                     // Now it is safe to mutate `self` again.
                     self.textarea.set_text("");
                     self.active_popup = ActivePopup::None;
@@ -464,35 +500,86 @@ impl ChatComposer {
                             return (InputResult::Command(cmd), true);
                         }
                         CommandItem::UserPrompt(_) => {
-                            // Parse `/name ...` into args/rest.
-                            let (args, rest) =
-                                if let Some(stripped) = first_line_owned.strip_prefix('/') {
-                                    let token = stripped.trim_start();
-                                    let mut parts = token.splitn(2, char::is_whitespace);
-                                    let _cmd_name = parts.next().unwrap_or("");
-                                    let remainder = parts.next().unwrap_or("").trim().to_string();
-                                    let args: Vec<String> = if remainder.is_empty() {
-                                        Vec::new()
-                                    } else {
-                                        remainder.split_whitespace().map(str::to_owned).collect()
-                                    };
-                                    (args, remainder)
-                                } else {
-                                    (Vec::new(), String::new())
-                                };
+                            // If the selected prompt has a default model in meta, prefer it
+                            // for this turn by sending an OverrideTurnContext op.
+                            if let Some(name) = selected_name.as_ref()
+                                && let Some(meta) = self.custom_prompts_meta.get(name)
+                                && let Some(model_id) = meta.model.as_ref()
+                            {
+                                let mut chosen_model: Option<String> = None;
+                                let mut chosen_effort: Option<
+                                    codex_core::protocol_config_types::ReasoningEffort,
+                                > = None;
+                                for p in builtin_model_presets().iter() {
+                                    if p.id == model_id.as_str() {
+                                        chosen_model = Some(p.model.to_string());
+                                        chosen_effort = Some(p.effort);
+                                        break;
+                                    }
+                                }
+                                if chosen_model.is_none() {
+                                    chosen_model = Some(model_id.clone());
+                                }
+                                self.app_event_tx.send(AppEvent::CodexOp(
+                                    Op::OverrideTurnContext {
+                                        cwd: None,
+                                        approval_policy: None,
+                                        sandbox_policy: None,
+                                        model: chosen_model,
+                                        effort: chosen_effort,
+                                        summary: None,
+                                    },
+                                ));
+                            }
+                            // Parse `/name …` using the full composer text.
+                            // `args` comes from the remainder of the first line.
+                            // `rest` combines that remainder with all subsequent lines verbatim.
+                            let mut args: Vec<String> = Vec::new();
+                            let mut rest = String::new();
 
-                            // If parameters were provided, log a status line.
-                            if !rest.is_empty()
-                                && let Some(stripped) = first_line_owned.strip_prefix('/')
+                            if let Some(first) = text_full.lines().next()
+                                && let Some(stripped) = first.strip_prefix('/')
                             {
                                 let token = stripped.trim_start();
-                                let cmd_name = token.split_whitespace().next().unwrap_or("");
-                                if !cmd_name.is_empty() {
+                                let mut parts = token.splitn(2, char::is_whitespace);
+                                let cmd_name = parts.next().unwrap_or("");
+                                let remainder_first_line = parts.next().unwrap_or("").trim();
+                                if !remainder_first_line.is_empty() {
+                                    args = remainder_first_line
+                                        .split_whitespace()
+                                        .map(str::to_owned)
+                                        .collect();
+                                }
+
+                                // Combine first-line remainder with subsequent lines.
+                                let tail = text_full.split_once('\n').map(|x| x.1).unwrap_or("");
+                                rest = if tail.is_empty() {
+                                    remainder_first_line.to_string()
+                                } else if remainder_first_line.is_empty() {
+                                    tail.to_string()
+                                } else {
+                                    format!("{remainder_first_line}\n{tail}")
+                                };
+
+                                // Surface a concise status line when parameters present.
+                                if !rest.is_empty() && !cmd_name.is_empty() {
+                                    let first_rest_line = rest.lines().next().unwrap_or("");
+                                    let mut preview = first_rest_line.to_string();
+                                    let max_preview = 80usize;
+                                    if preview.chars().count() > max_preview {
+                                        // Truncate on char boundary.
+                                        preview = preview.chars().take(max_preview).collect();
+                                        preview.push('…');
+                                    }
+                                    let extra_lines = rest.lines().count().saturating_sub(1);
+                                    if extra_lines > 0 {
+                                        preview.push_str(&format!(" (+{extra_lines} more lines)"));
+                                    }
                                     let line: Line<'static> = vec![
                                         "Running ".dim(),
                                         format!("/{cmd_name}").bold(),
                                         " with ".dim(),
-                                        rest.clone().into(),
+                                        preview.into(),
                                     ]
                                     .into();
                                     self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
@@ -1407,6 +1494,33 @@ impl WidgetRef for ChatComposer {
 
         let mut state = self.textarea_state.borrow_mut();
         StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
+        // Show argument-hint placeholder for custom prompts while typing the command name.
+        if let Some(first_line) = self.textarea.text().lines().next()
+            && let Some(stripped) = first_line.strip_prefix('/')
+        {
+            let token = stripped.trim_start();
+            let cmd_token = token.split_whitespace().next().unwrap_or("");
+            let after_cmd = &token[cmd_token.len()..];
+            // Show placeholder only when there is exactly one space after the command name
+            // on the first line (e.g., "/name "). Any other input (zero spaces,
+            // multiple spaces, or any non-space character) must hide the placeholder.
+            if after_cmd == " " && !cmd_token.is_empty() {
+                // Resolve meta by basename (support optional namespace prefix like ns:name).
+                let base = cmd_token.rsplit(':').next().unwrap_or(cmd_token);
+                if let Some(meta) = self.custom_prompts_meta.get(base)
+                    && let Some(hint) = meta.argument_hint.as_ref()
+                {
+                    let inner = textarea_rect.inner(Margin::new(1, 0));
+                    let prefix_width = UnicodeWidthStr::width(first_line);
+                    let x = inner.x.saturating_add(prefix_width as u16);
+                    let w = inner.width.saturating_sub(prefix_width as u16);
+                    let pos = Rect::new(x, inner.y, w, 1);
+                    Line::from(hint.as_str())
+                        .style(Style::default().dim())
+                        .render_ref(pos, buf);
+                }
+            }
+        }
         if self.textarea.text().is_empty() {
             Line::from(self.placeholder_text.as_str())
                 .style(Style::default().dim())
@@ -1694,6 +1808,54 @@ mod tests {
         // Any edit that removes the placeholder should clear pending_paste
         composer.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         assert!(composer.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn tab_completion_inserts_namespaced_prompt() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        // Provide a single custom prompt with a namespace so popup resolves to "ns:name".
+        composer.set_custom_prompts(vec![codex_protocol::custom_prompts::CustomPrompt {
+            name: "ai_review".into(),
+            path: "/tmp/engineer/ai_review.md".into(),
+            content: "body".into(),
+        }]);
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "ai_review".into(),
+            codex_protocol::custom_prompts::CustomPromptMeta {
+                name: "ai_review".into(),
+                path: std::path::PathBuf::from("/tmp/engineer/ai_review.md"),
+                scope: codex_protocol::custom_prompts::PromptScope::Project,
+                namespace: vec!["engineer".into()],
+                description: None,
+                argument_hint: None,
+                model: None,
+            },
+        );
+        composer.set_custom_prompts_meta(meta);
+
+        // Start typing the namespaced command prefix.
+        composer.set_text_content("/engineer:ai".to_string());
+        // Nudge the composer so the slash popup is created (set_text_content
+        // also syncs the file popup which can hide the slash popup).
+        let (_res0, _redraw0) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Trigger Tab completion.
+        let (_res, _redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(composer.current_text(), "/engineer:ai_review ");
     }
 
     #[test]
@@ -2076,6 +2238,62 @@ mod tests {
     }
 
     #[test]
+    fn argument_hint_placeholder_shows_only_with_single_space() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        // Provide meta for the prompt basename `ai_review` with an argument hint.
+        let mut meta = HashMap::new();
+        meta.insert(
+            "ai_review".to_string(),
+            codex_protocol::custom_prompts::CustomPromptMeta {
+                name: "ai_review".to_string(),
+                path: std::path::PathBuf::from("/tmp/ai_review.md"),
+                scope: codex_protocol::custom_prompts::PromptScope::Project,
+                namespace: vec!["engineer".to_string()],
+                description: Some("Perform a specialized AI/ML code review".to_string()),
+                argument_hint: Some("[instructions]".to_string()),
+                model: None,
+            },
+        );
+        composer.custom_prompts_meta = meta;
+
+        let area = ratatui::layout::Rect::new(0, 0, 80, 3);
+
+        // Helper to render and collect the buffer contents into a single string.
+        let mut has_hint_for = |text: &str| -> bool {
+            composer.set_text_content(text.to_string());
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            composer.render_ref(area, &mut buf);
+            let mut acc = String::new();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    let ch = buf[(x, y)].symbol().chars().next().unwrap_or(' ');
+                    acc.push(ch);
+                }
+                acc.push('\n');
+            }
+            acc.contains("[instructions]")
+        };
+
+        // Exactly one space after the command name should show the hint.
+        assert!(has_hint_for("/engineer:ai_review "));
+        // Zero spaces -> no hint
+        assert!(!has_hint_for("/engineer:ai_review"));
+        // Two spaces -> no hint
+        assert!(!has_hint_for("/engineer:ai_review  "));
+        // Non-space content -> no hint
+        assert!(!has_hint_for("/engineer:ai_review x"));
+    }
+
+    #[test]
     fn test_partial_placeholder_deletion() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -2394,6 +2612,141 @@ mod tests {
             composer.pending_pastes.is_empty(),
             "no placeholder for small burst"
         );
+    }
+
+    #[test]
+    fn run_custom_prompt_uses_multiline_rest_and_args_from_first_line() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let prompt_text = "Test prompt";
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        // Inject prompts as if received via event.
+        let prompt_path: PathBuf = "/tmp/my-prompt.md".into();
+        composer.set_custom_prompts(vec![CustomPrompt {
+            name: "my-prompt".to_string(),
+            path: prompt_path.clone(),
+            content: prompt_text.to_string(),
+        }]);
+
+        // Type command prefix to ensure the popup selects the prompt by exact match.
+        type_chars_humanlike(
+            &mut composer,
+            &[
+                '/', 'm', 'y', '-', 'p', 'r', 'o', 'm', 'p', 't', ' ', 'a', 'r', 'g', '1',
+            ],
+        );
+        // Add multi-line tail.
+        composer.insert_str("\n");
+        composer.insert_str("line 2");
+        composer.insert_str("\n");
+        composer.insert_str("line 3");
+
+        // Press Tab to ensure popup selection is refreshed, then Enter to dispatch.
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        // Press Enter to dispatch the selected custom prompt.
+        let (_result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Expect a CodexOp with RunCustomPrompt and multiline rest.
+        // Drain events until we see the CodexOp for RunCustomPrompt.
+        let evt = rx.try_recv().expect("AppEvent should be sent");
+        let ev = match evt {
+            AppEvent::CodexOp(codex_core::protocol::Op::RunCustomPrompt { path, args, rest }) => {
+                (path, args, rest)
+            }
+            _ => {
+                let evt2 = rx.try_recv().expect("CodexOp should follow status event");
+                match evt2 {
+                    AppEvent::CodexOp(codex_core::protocol::Op::RunCustomPrompt {
+                        path,
+                        args,
+                        rest,
+                    }) => (path, args, rest),
+                    other => panic!("Unexpected event order: {other:?}"),
+                }
+            }
+        };
+        assert_eq!(ev.0, prompt_path);
+        assert_eq!(ev.1, vec!["arg1".to_string()]);
+        assert_eq!(ev.2, "arg1\nline 2\nline 3");
+    }
+
+    #[test]
+    fn run_custom_prompt_expands_large_paste_placeholders_in_rest() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let prompt_path: PathBuf = "/tmp/my-prompt.md".into();
+        composer.set_custom_prompts(vec![CustomPrompt {
+            name: "my-prompt".to_string(),
+            path: prompt_path.clone(),
+            content: "".to_string(),
+        }]);
+
+        // Type the command on the first line, then add a newline.
+        type_chars_humanlike(
+            &mut composer,
+            &['/', 'm', 'y', '-', 'p', 'r', 'o', 'm', 'p', 't'],
+        );
+        composer.insert_str("\n");
+        // Paste a large buffer to create a placeholder on the second line.
+        let large = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
+        let _ = composer.handle_paste(large.clone());
+
+        // Press Tab to ensure popup selection is refreshed, then Enter to dispatch.
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        // Press Enter to dispatch the selected custom prompt.
+        let (_result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Expect the large content to be expanded in rest (no placeholder).
+        let evt = rx.try_recv().expect("AppEvent should be sent");
+        let ev = match evt {
+            AppEvent::CodexOp(codex_core::protocol::Op::RunCustomPrompt { path, args, rest }) => {
+                (path, args, rest)
+            }
+            _ => {
+                let evt2 = rx.try_recv().expect("CodexOp should follow status event");
+                match evt2 {
+                    AppEvent::CodexOp(codex_core::protocol::Op::RunCustomPrompt {
+                        path,
+                        args,
+                        rest,
+                    }) => (path, args, rest),
+                    other => panic!("Unexpected event order: {other:?}"),
+                }
+            }
+        };
+        assert_eq!(ev.0, prompt_path);
+        assert!(ev.1.is_empty());
+        assert_eq!(ev.2, large);
+        // Pending placeholders should be cleared.
+        assert!(composer.pending_pastes.is_empty());
     }
 
     #[test]
