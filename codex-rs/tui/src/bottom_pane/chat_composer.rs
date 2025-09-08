@@ -1501,8 +1501,10 @@ impl WidgetRef for ChatComposer {
             let token = stripped.trim_start();
             let cmd_token = token.split_whitespace().next().unwrap_or("");
             let after_cmd = &token[cmd_token.len()..];
-            // Only show placeholder when no non-space args have been typed yet.
-            if after_cmd.chars().all(|c| c.is_whitespace()) && !cmd_token.is_empty() {
+            // Show placeholder only when there is exactly one space after the command name
+            // on the first line (e.g., "/name "). Any other input (zero spaces,
+            // multiple spaces, or any non-space character) must hide the placeholder.
+            if after_cmd == " " && !cmd_token.is_empty() {
                 // Resolve meta by basename (support optional namespace prefix like ns:name).
                 let base = cmd_token.rsplit(':').next().unwrap_or(cmd_token);
                 if let Some(meta) = self.custom_prompts_meta.get(base)
@@ -2233,6 +2235,66 @@ mod tests {
                 (" and ".to_string(), 0),
             ]
         );
+    }
+
+    #[test]
+    fn argument_hint_placeholder_shows_only_with_single_space() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        // Provide meta for the prompt basename `ai_review` with an argument hint.
+        let mut meta = HashMap::new();
+        meta.insert(
+            "ai_review".to_string(),
+            codex_protocol::custom_prompts::CustomPromptMeta {
+                name: "ai_review".to_string(),
+                path: std::path::PathBuf::from("/tmp/ai_review.md"),
+                scope: codex_protocol::custom_prompts::PromptScope::Project,
+                namespace: vec!["engineer".to_string()],
+                description: Some("Perform a specialized AI/ML code review".to_string()),
+                argument_hint: Some("[instructions]".to_string()),
+                model: None,
+            },
+        );
+        composer.custom_prompts_meta = meta;
+
+        let area = ratatui::layout::Rect::new(0, 0, 80, 3);
+
+        // Helper to render and collect the buffer contents into a single string.
+        let mut has_hint_for = |text: &str| -> bool {
+            composer.set_text_content(text.to_string());
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            (&composer).render_ref(area, &mut buf);
+            let mut acc = String::new();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    let ch = buf[(x, y)].symbol().chars().next().unwrap_or(' ');
+                    acc.push(ch);
+                }
+                acc.push('\n');
+            }
+            acc.contains("[instructions]")
+        };
+
+        // Exactly one space after the command name should show the hint.
+        assert!(has_hint_for("/engineer:ai_review "));
+        // Zero spaces -> no hint
+        assert!(!has_hint_for("/engineer:ai_review"));
+        // Two spaces -> no hint
+        assert!(!has_hint_for("/engineer:ai_review  "));
+        // Non-space content -> no hint
+        assert!(!has_hint_for("/engineer:ai_review x"));
     }
 
     #[test]
