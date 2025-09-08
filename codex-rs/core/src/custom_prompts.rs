@@ -351,6 +351,7 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
     let mut out = String::with_capacity(content.len().saturating_add(rest.len()));
     let bytes = content.as_bytes();
     let mut i = 0usize;
+    let mut expanded = false;
     while i < bytes.len() {
         if bytes[i] != b'$' {
             out.push(bytes[i] as char);
@@ -362,6 +363,7 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
         if i + 10 <= bytes.len() && &content[i..i + 10] == "$ARGUMENTS" {
             out.push_str(rest);
             i += 10;
+            expanded = true;
             continue;
         }
 
@@ -385,6 +387,7 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
                 }
             }
             i = j;
+            expanded = true;
             continue;
         }
 
@@ -392,6 +395,12 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
         out.push('$');
         i += 1;
     }
+
+    if !expanded && !rest.is_empty() {
+        out.push_str("\n\nArguments: ");
+        out.push_str(rest);
+    }
+
     out
 }
 
@@ -739,6 +748,13 @@ mod tests {
         let rest = "line 1\nline 2";
         let expanded = expand_arguments(content, &args, rest);
         assert_eq!(expanded, "Header:\nline 1\nline 2\nTail (pos=A)");
+    }
+
+    #[test]
+    fn expand_arguments_appends_rest_when_no_placeholders() {
+        let content = "Prompt body";
+        let expanded = expand_arguments(content, &[], "extra args");
+        assert_eq!(expanded, "Prompt body\n\nArguments: extra args");
     }
 
     // T005: Frontmatter detection and YAML parsing
