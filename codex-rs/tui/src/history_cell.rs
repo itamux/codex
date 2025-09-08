@@ -637,6 +637,10 @@ pub(crate) fn new_session_info(
             ]));
         }
         lines.push(Line::from(vec![
+            " /resume".bold(),
+            format!(" - {}", SlashCommand::Resume.description()).dim(),
+        ]));
+        lines.push(Line::from(vec![
             " /status".bold(),
             format!(" - {}", SlashCommand::Status.description()).dim(),
         ]));
