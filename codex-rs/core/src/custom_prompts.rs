@@ -324,8 +324,8 @@ fn is_allowed_model(model: &str) -> bool {
     )
 }
 
-/// Validate a model value parsed from frontmatter. If missing or invalid, return the default.
-/// Logs a warning for invalid values.
+/// Validate a model value parsed from frontmatter. If invalid, fall back to the default.
+/// Missing values propagate `None` so callers can detect when no model was specified.
 fn validate_or_default_model(model: Option<&String>, path: &Path) -> Option<String> {
     match model {
         Some(m) if is_allowed_model(m) => Some(m.clone()),
@@ -338,7 +338,7 @@ fn validate_or_default_model(model: Option<&String>, path: &Path) -> Option<Stri
             );
             Some(default_model_id().to_string())
         }
-        None => Some(default_model_id().to_string()),
+        None => None,
     }
 }
 
@@ -848,9 +848,9 @@ mod tests {
         assert!(out.len() <= 200);
     }
 
-    // T019: Backward compatibility – prompts without frontmatter are unchanged except defaults
+    // T019: Backward compatibility – prompts without frontmatter yield empty meta
     #[tokio::test]
-    async fn no_frontmatter_yields_empty_meta_and_default_model() {
+    async fn no_frontmatter_yields_empty_meta_and_no_model() {
         let fx = PromptFixtures::new();
         fx.write_project("plain.md", "Just content\n");
 
@@ -859,6 +859,6 @@ mod tests {
         let m = meta.iter().find(|m| m.name == "plain").unwrap();
         assert_eq!(m.description.as_deref(), None);
         assert_eq!(m.argument_hint.as_deref(), None);
-        assert_eq!(m.model.as_deref(), Some(super::default_model_id()));
+        assert_eq!(m.model, None);
     }
 }

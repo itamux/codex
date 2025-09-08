@@ -531,9 +531,9 @@ impl ChatComposer {
                                     },
                                 ));
                             }
-                            // Parse `/name …` using the full composer text. Build args from the
-                            // first line remainder; build rest from the remainder plus all
-                            // subsequent lines verbatim.
+                            // Parse `/name …` using the full composer text.
+                            // `args` comes from the remainder of the first line.
+                            // `rest` combines that remainder with all subsequent lines verbatim.
                             let mut args: Vec<String> = Vec::new();
                             let mut rest = String::new();
 
