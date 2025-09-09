@@ -55,6 +55,7 @@ mod shimmer;
 mod slash_command;
 mod status_indicator_widget;
 mod streaming;
+mod styles_gen;
 mod text_formatting;
 mod tui;
 mod user_approval_widget;
@@ -71,6 +72,7 @@ mod updates;
 
 pub use cli::Cli;
 
+use crate::cli::OutputStyle;
 use crate::onboarding::TrustDirectorySelection;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
 use crate::onboarding::onboarding_screen::run_onboarding_app;
@@ -131,7 +133,10 @@ pub async fn run_main(
         include_plan_tool: Some(true),
         include_apply_patch_tool: None,
         include_view_image_tool: None,
-        show_raw_agent_reasoning: cli.oss.then_some(true),
+        show_raw_agent_reasoning: match cli.output_style {
+            OutputStyle::Explanatory => Some(true),
+            _ => cli.oss.then_some(true),
+        },
         tools_web_search_request: cli.web_search.then_some(true),
     };
     let raw_overrides = cli.config_overrides.raw_overrides.clone();
@@ -185,6 +190,9 @@ pub async fn run_main(
         sandbox_mode,
         cli.config_profile.clone(),
     )?;
+
+    // Apply output style by augmenting user_instructions (safe with API validation).
+    apply_output_style_to_config(cli.output_style, &mut config);
 
     let log_dir = codex_core::config::log_dir(&config)?;
     std::fs::create_dir_all(&log_dir)?;
@@ -308,6 +316,7 @@ async fn run_ratatui_app(
         images,
         resume,
         r#continue,
+        output_style,
         ..
     } = cli;
 
@@ -366,6 +375,7 @@ async fn run_ratatui_app(
         prompt,
         images,
         resume_selection,
+        output_style,
     )
     .await;
 
@@ -374,6 +384,30 @@ async fn run_ratatui_app(
     session_log::log_session_end();
     // ignore error when collecting usage – report underlying error instead
     app_result
+}
+
+pub(crate) fn apply_output_style_to_config(style: OutputStyle, config: &mut Config) {
+    // Remove any previously injected style marker.
+    let cleaned = config.user_instructions.as_ref().map(|s| {
+        s.lines()
+            .filter(|line| !line.trim_start().starts_with("<!-- codex-output-style:"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+            .trim()
+            .to_string()
+    });
+    config.user_instructions = cleaned;
+
+    // Map enum variant to dynamic style name by lowercasing its debug form.
+    let variant = format!("{:?}", style).to_ascii_lowercase();
+    if variant == "default" {
+        config.user_instructions = None;
+    } else {
+        config.user_instructions = builtin_style_yaml_by_name(&variant).map(|s| s.to_string());
+    }
 }
 
 #[expect(
@@ -527,4 +561,27 @@ mod tests {
             &cfg
         ))
     }
+}
+
+/// Enumerate built-in styles discovered at build time.
+pub fn builtin_style_names() -> impl Iterator<Item = &'static str> {
+    styles_gen::STYLE_REGISTRY.iter().map(|(n, _)| *n)
+}
+
+/// Return the built-in style YAML by name (case-insensitive).
+pub fn builtin_style_yaml_by_name(name: &str) -> Option<&'static str> {
+    let key = name.to_ascii_lowercase();
+    styles_gen::STYLE_REGISTRY
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(&key))
+        .map(|(_, y)| *y)
+}
+
+/// Apply a discovered style by name to the running config.
+pub(crate) fn apply_output_style_name_to_config(name: &str, config: &mut Config) {
+    if name.eq_ignore_ascii_case("default") {
+        config.user_instructions = None;
+        return;
+    }
+    config.user_instructions = builtin_style_yaml_by_name(name).map(|s| s.to_string());
 }

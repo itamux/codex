@@ -98,6 +98,9 @@ enum DebugCommand {
 
     /// Run a command under Landlock+seccomp (Linux only).
     Landlock(LandlockCommand),
+
+    /// Show the final system prompt after applying an output style.
+    OutputStyle(OutputStyleDebugCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -133,6 +136,21 @@ struct GenerateTsCommand {
     /// Optional path to the Prettier executable to format generated files
     #[arg(short = 'p', long = "prettier", value_name = "PRETTIER_BIN")]
     prettier: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct OutputStyleDebugCommand {
+    /// Name of the style to apply (case-insensitive). If omitted, lists available styles.
+    #[arg(value_name = "STYLE_NAME")]
+    style: Option<String>,
+
+    /// Model slug for feature flags (defaults to gpt-4.1)
+    #[arg(long, value_name = "MODEL", default_value = "gpt-4.1")]
+    model: String,
+
+    /// Limit output to selected sections (comma-separated): personality,presentation,preambles,planning,progress
+    #[arg(long = "sections", value_name = "LIST")]
+    sections: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -203,6 +221,98 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     codex_linux_sandbox_exe,
                 )
                 .await?;
+            }
+            DebugCommand::OutputStyle(opts) => {
+                if opts.style.is_none() {
+                    let names: Vec<&'static str> = codex_tui::builtin_style_names().collect();
+                    println!("Available styles ({}):", names.len());
+                    for n in names {
+                        println!("- {}", n);
+                    }
+                } else {
+                    let name = opts.style.unwrap();
+                    match codex_tui::builtin_style_yaml_by_name(&name) {
+                        Some(yaml) => {
+                            let mf = codex_core::model_family::find_family_for_model(&opts.model)
+                                .unwrap_or_else(|| {
+                                    codex_core::model_family::find_family_for_model("gpt-4.1")
+                                        .unwrap()
+                                });
+                            let full = codex_core::debug_full_instructions(yaml, &mf);
+                            if let Some(list) = opts.sections.as_ref() {
+                                let wanted: Vec<&str> = list
+                                    .split(",")
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                                let sections: [(&str, &str, &'static [&'static str]); 5] = [
+                                    ("personality", "## Personality", &["\n## "]),
+                                    (
+                                        "presentation",
+                                        "## Presenting your work and final message",
+                                        &["\n## "],
+                                    ),
+                                    (
+                                        "preambles",
+                                        "### Preamble messages",
+                                        &[("\n### "), ("\n## ")],
+                                    ),
+                                    ("planning", "## Planning", &["\n## "]),
+                                    ("progress", "## Sharing progress updates", &["\n## "]),
+                                ];
+                                fn find_range(
+                                    base: &str,
+                                    heading: &str,
+                                    next_markers: &[&str],
+                                ) -> Option<(usize, usize)> {
+                                    let target_bof = format!("{heading}\n");
+                                    let target = format!("\n{heading}\n");
+                                    let start = if base.starts_with(&target_bof) {
+                                        Some(0)
+                                    } else {
+                                        base.find(&target).map(|p| p + 1)
+                                    }?;
+                                    let after_heading = start + heading.len();
+                                    let content_start = base[after_heading..]
+                                        .find("\n")
+                                        .map(|off| after_heading + off + 1)
+                                        .unwrap_or(after_heading);
+                                    let mut next = base.len();
+                                    for m in next_markers {
+                                        if let Some(p) = base[content_start..].find(m) {
+                                            let idx = content_start + p + 1;
+                                            if idx < next {
+                                                next = idx;
+                                            }
+                                        }
+                                    }
+                                    Some((start, next))
+                                }
+                                let mut out_s = String::new();
+                                for (key, heading, next) in sections {
+                                    if wanted.iter().any(|w| w.eq_ignore_ascii_case(key)) {
+                                        if let Some((a, b)) = find_range(&full, heading, next) {
+                                            if !out_s.is_empty() {
+                                                out_s.push_str("\n");
+                                            }
+                                            out_s.push_str(&full[a..b]);
+                                        }
+                                    }
+                                }
+                                println!("{}", out_s);
+                            } else {
+                                println!("{}", full);
+                            }
+                        }
+                        None => {
+                            eprintln!("Unknown style: {}", name);
+                            let names: Vec<&'static str> =
+                                codex_tui::builtin_style_names().collect();
+                            eprintln!("Available: {}", names.join(", "));
+                            std::process::exit(2);
+                        }
+                    }
+                }
             }
         },
         Some(Subcommand::Apply(mut apply_cli)) => {

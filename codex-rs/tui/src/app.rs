@@ -54,6 +54,8 @@ pub(crate) struct App {
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
+    pub(crate) output_style: crate::cli::OutputStyle,
+    pub(crate) style_name: Option<String>,
 }
 
 impl App {
@@ -64,6 +66,7 @@ impl App {
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
         resume_selection: ResumeSelection,
+        output_style: crate::cli::OutputStyle,
     ) -> Result<TokenUsage> {
         use tokio_stream::StreamExt;
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
@@ -82,6 +85,8 @@ impl App {
                     initial_prompt: initial_prompt.clone(),
                     initial_images: initial_images.clone(),
                     enhanced_keys_supported,
+                    output_style,
+                    style_name: None,
                 };
                 ChatWidget::new(init, conversation_manager.clone())
             }
@@ -103,6 +108,8 @@ impl App {
                     initial_prompt: initial_prompt.clone(),
                     initial_images: initial_images.clone(),
                     enhanced_keys_supported,
+                    output_style,
+                    style_name: None,
                 };
                 ChatWidget::new_from_existing(
                     init,
@@ -127,6 +134,8 @@ impl App {
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            output_style,
+            style_name: None,
         };
 
         let tui_events = tui.event_stream();
@@ -190,6 +199,25 @@ impl App {
 
     async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
         match event {
+            AppEvent::UpdateOutputStyle(style) => {
+                self.chat_widget.set_output_style(style);
+
+                // Track a friendly name for display
+                self.style_name = match style {
+                    crate::cli::OutputStyle::Default => None,
+                    crate::cli::OutputStyle::Explanatory => Some("explanatory".to_string()),
+                    crate::cli::OutputStyle::Learning => Some("learning".to_string()),
+                    crate::cli::OutputStyle::Checklist => Some("checklist".to_string()),
+                    crate::cli::OutputStyle::Verbose => Some("verbose".to_string()),
+                };
+                crate::apply_output_style_to_config(style, &mut self.config);
+                return Ok(true);
+            }
+            AppEvent::UpdateOutputStyleName(name) => {
+                self.style_name = Some(name.clone());
+                crate::apply_output_style_name_to_config(&name, &mut self.config);
+                return Ok(true);
+            }
             AppEvent::NewSession => {
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: self.config.clone(),
@@ -198,6 +226,8 @@ impl App {
                     initial_prompt: None,
                     initial_images: Vec::new(),
                     enhanced_keys_supported: self.enhanced_keys_supported,
+                    output_style: self.output_style,
+                    style_name: self.style_name.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 tui.frame_requester().schedule_frame();
@@ -215,6 +245,8 @@ impl App {
                             initial_prompt: None,
                             initial_images: Vec::new(),
                             enhanced_keys_supported: self.enhanced_keys_supported,
+                            output_style: self.output_style,
+                            style_name: self.style_name.clone(),
                         };
                         self.chat_widget = ChatWidget::new(init, self.server.clone());
                         tui.frame_requester().schedule_frame();
@@ -233,6 +265,8 @@ impl App {
                             initial_prompt: None,
                             initial_images: Vec::new(),
                             enhanced_keys_supported: self.enhanced_keys_supported,
+                            output_style: self.output_style,
+                            style_name: self.style_name.clone(),
                         };
                         self.chat_widget = ChatWidget::new_from_existing(
                             init,

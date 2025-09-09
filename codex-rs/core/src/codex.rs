@@ -297,6 +297,8 @@ pub(crate) struct TurnContext {
     /// instead of `std::env::current_dir()`.
     pub(crate) cwd: PathBuf,
     pub(crate) base_instructions: Option<String>,
+    /// Output style appendage that should be added to the base instructions.
+    pub(crate) style_instructions: Option<String>,
     pub(crate) user_instructions: Option<String>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
@@ -384,7 +386,11 @@ impl Session {
         // - spin up MCP connection manager
         // - perform default shell discovery
         // - load history metadata
-        let rollout_fut = RolloutRecorder::new(&config, session_id, user_instructions.clone());
+        let (clean_user_instructions, style_instructions) =
+            split_style_instructions(user_instructions.clone());
+
+        let rollout_fut =
+            RolloutRecorder::new(&config, session_id, clean_user_instructions.clone());
 
         let mcp_fut = McpConnectionManager::new(config.mcp_servers.clone());
         let default_shell_fut = shell::default_user_shell();
@@ -452,8 +458,9 @@ impl Session {
                 use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
                 include_view_image_tool: config.include_view_image_tool,
             }),
-            user_instructions,
+            user_instructions: clean_user_instructions,
             base_instructions,
+            style_instructions,
             approval_policy,
             sandbox_policy,
             shell_environment_policy: config.shell_environment_policy.clone(),
@@ -1108,6 +1115,7 @@ async fn submission_loop(
                     tools_config,
                     user_instructions: prev.user_instructions.clone(),
                     base_instructions: prev.base_instructions.clone(),
+                    style_instructions: prev.style_instructions.clone(),
                     approval_policy: new_approval_policy,
                     sandbox_policy: new_sandbox_policy.clone(),
                     shell_environment_policy: prev.shell_environment_policy.clone(),
@@ -1189,6 +1197,7 @@ async fn submission_loop(
                         }),
                         user_instructions: turn_context.user_instructions.clone(),
                         base_instructions: turn_context.base_instructions.clone(),
+                        style_instructions: turn_context.style_instructions.clone(),
                         approval_policy,
                         sandbox_policy,
                         shell_environment_policy: turn_context.shell_environment_policy.clone(),
@@ -1635,6 +1644,7 @@ async fn run_turn(
         input,
         tools,
         base_instructions_override: turn_context.base_instructions.clone(),
+        extra_instructions: turn_context.style_instructions.clone(),
     };
 
     let mut retries = 0;
@@ -1888,6 +1898,7 @@ async fn run_compact_task(
         input: turn_input,
         tools: Vec::new(),
         base_instructions_override: Some(compact_instructions.clone()),
+        extra_instructions: turn_context.style_instructions.clone(),
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
@@ -3101,4 +3112,59 @@ mod tests {
 
         assert_eq!(expected, got);
     }
+}
+
+/// Extract any embedded output-style instructions from user_instructions and return
+/// (cleaned_user_instructions, style_instructions).
+fn split_style_instructions(user_instructions: Option<String>) -> (Option<String>, Option<String>) {
+    let Some(text) = user_instructions else {
+        return (None, None);
+    };
+    // Prefer YAML-based style documents if present.
+    if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
+        if val.get("kind").and_then(|k| k.as_str()) == Some("codex-style") {
+            return (None, Some(text));
+        }
+    }
+    // Back-compat: support old HTML-comment style markers
+    let mut cleaned: Vec<&str> = Vec::new();
+    let mut captured: Vec<&str> = Vec::new();
+    let mut in_style_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("<!-- codex-output-style:") {
+            in_style_block = true;
+            continue;
+        }
+        if in_style_block {
+            captured.push(line);
+        } else {
+            cleaned.push(line);
+        }
+    }
+    let cleaned_s = cleaned
+        .join(
+            "
+",
+        )
+        .trim()
+        .to_string();
+    let captured_s = captured
+        .join(
+            "
+",
+        )
+        .trim()
+        .to_string();
+    let cleaned_opt = if cleaned_s.is_empty() {
+        None
+    } else {
+        Some(cleaned_s)
+    };
+    let captured_opt = if captured_s.is_empty() {
+        None
+    } else {
+        Some(captured_s)
+    };
+    (cleaned_opt, captured_opt)
 }
