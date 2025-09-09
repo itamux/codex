@@ -596,26 +596,3 @@ mod tests {
         ))
     }
 }
-
-/// Enumerate built-in styles discovered at build time.
-pub fn builtin_style_names() -> impl Iterator<Item = &'static str> {
-    styles_gen::STYLE_REGISTRY.iter().map(|(n, _)| *n)
-}
-
-/// Return the built-in style YAML by name (case-insensitive).
-pub fn builtin_style_yaml_by_name(name: &str) -> Option<&'static str> {
-    let key = name.to_ascii_lowercase();
-    styles_gen::STYLE_REGISTRY
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(&key))
-        .map(|(_, y)| *y)
-}
-
-/// Apply a discovered style by name to the running config.
-pub(crate) fn apply_output_style_name_to_config(name: &str, config: &mut Config) {
-    if name.eq_ignore_ascii_case("default") {
-        config.user_instructions = None;
-        return;
-    }
-    config.user_instructions = builtin_style_yaml_by_name(name).map(|s| s.to_string());
-}
