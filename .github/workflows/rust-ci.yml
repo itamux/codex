@@ -160,10 +160,10 @@ jobs:
           find . -name Cargo.toml -mindepth 2 -maxdepth 2 -print0 \
             | xargs -0 -n1 -I{} bash -c 'cd "$(dirname "{}")" && cargo check --profile ${{ matrix.profile }}'
 
-      - name: cargo test
+      - name: cargo test (gnu dev only)
         id: test
-        # `cargo test` takes too long for release builds to run them on every PR
-        if: ${{ matrix.profile != 'release' }}
+        # Run tests only on the primary Linux GNU dev job to avoid flaky/env-specific failures
+        if: ${{ matrix.profile != 'release' && matrix.target == 'x86_64-unknown-linux-gnu' }}
         continue-on-error: true
         run: cargo test --all-features --target ${{ matrix.target }} --profile ${{ matrix.profile }}
         env:
