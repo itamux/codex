@@ -562,11 +562,6 @@ mod tests {
             }
         }
 
-        /// Absolute path to the user prompts root (e.g., `$CODEX_HOME/prompts`).
-        fn user_dir(&self) -> &Path {
-            &self.user_root
-        }
-
         /// Absolute path to the project prompts root (e.g., `PROJECT/.codex/prompts`).
         fn project_dir(&self) -> &Path {
             &self.project_root
@@ -795,7 +790,7 @@ mod tests {
         assert_eq!(meta.get("description"), Some(&"Hello world".to_string()));
         assert_eq!(meta.get("argument_hint"), Some(&"<arg>".to_string()));
         assert_eq!(meta.get("model"), Some(&"gpt-5-medium".to_string()));
-        assert!(meta.get("unknown").is_none());
+        assert!(!meta.contains_key("unknown"));
     }
 
     // T005: Malformed YAML is ignored (treated as no frontmatter)
