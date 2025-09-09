@@ -3027,20 +3027,18 @@ fn split_style_instructions(user_instructions: Option<String>) -> (Option<String
             } else {
                 cleaned_lines.push(line);
             }
-        } else {
-            if let Some(end) = trimmed.find(close) {
-                let inner = trimmed[..end].trim();
-                if !inner.is_empty() {
-                    captured_lines.push(inner.to_string());
-                }
-                in_style_block = false;
-                let suffix = &trimmed[end + close.len()..];
-                if !suffix.is_empty() {
-                    cleaned_lines.push(suffix.to_string());
-                }
-            } else {
-                captured_lines.push(line);
+        } else if let Some(end) = trimmed.find(close) {
+            let inner = trimmed[..end].trim();
+            if !inner.is_empty() {
+                captured_lines.push(inner.to_string());
             }
+            in_style_block = false;
+            let suffix = &trimmed[end + close.len()..];
+            if !suffix.is_empty() {
+                cleaned_lines.push(suffix.to_string());
+            }
+        } else {
+            captured_lines.push(line.clone());
         }
     }
     let cleaned_s = cleaned_lines.join("\n").trim().to_string();
