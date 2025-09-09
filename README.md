@@ -1,8 +1,8 @@
-<h1 align="center">OpenAI Codex CLI</h1>
+<h1 align="center">Itamux Codex CLI</h1>
 
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install codex</code></p>
+<p align="center"><code>npm i -g @itamux/codex</code><br />or <code>brew install codex</code></p>
 
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, see <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+<p align="center"><strong>Codex CLI</strong> is a coding agent from Itamux that runs locally on your computer
 
 <p align="center">
   <img src="./.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
@@ -12,12 +12,12 @@
 
 ## Quickstart
 
-### Installing and running Codex CLI
+### Installing and running Itamux CLI
 
 Install globally with your preferred package manager. If you use npm:
 
 ```shell
-npm install -g @openai/codex
+npm install -g @itamux/codex
 ```
 
 Alternatively, if you use Homebrew:
@@ -33,7 +33,7 @@ codex
 ```
 
 <details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+<summary>You can also go to the <a href="https://github.com/itamux/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
 
 Each GitHub Release contains many executables, but in practice, you likely want one of these:
 
