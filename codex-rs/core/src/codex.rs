@@ -2981,39 +2981,70 @@ fn split_style_instructions(user_instructions: Option<String>) -> (Option<String
     // Prefer YAML-based style documents if present.
     if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&text)
         && val.get("kind").and_then(|k| k.as_str()) == Some("codex-style")
+        && val.get("version").and_then(|v| v.as_i64()).is_some()
     {
         return (None, Some(text));
     }
-    // Back-compat: support old HTML-comment style markers
-    let mut cleaned: Vec<&str> = Vec::new();
-    let mut captured: Vec<&str> = Vec::new();
+    // Back-compat: support old HTML-comment style markers (single-line and multi-line):
+    //   <!-- codex-output-style: ... -->
+    //   <!-- codex-output-style:
+    //      ...
+    //   -->
+    let mut cleaned_lines: Vec<String> = Vec::new();
+    let mut captured_lines: Vec<String> = Vec::new();
     let mut in_style_block = false;
-    for line in text.lines() {
+    let open = "<!-- codex-output-style:";
+    let close = "-->";
+    for raw in text.lines() {
+        let line = raw.to_string();
         let trimmed = line.trim_start();
-        if trimmed.starts_with("<!-- codex-output-style:") {
-            in_style_block = true;
-            continue;
-        }
-        if in_style_block {
-            captured.push(line);
+        if !in_style_block {
+            if let Some(start) = trimmed.find(open) {
+                // Preserve any prefix before the marker on this line
+                let prefix = &line[..line.find(open).unwrap_or(0)];
+                if !prefix.is_empty() {
+                    cleaned_lines.push(prefix.to_string());
+                }
+                let after = &trimmed[start + open.len()..];
+                if let Some(end) = after.find(close) {
+                    // Single-line block
+                    let inner = after[..end].trim();
+                    if !inner.is_empty() {
+                        captured_lines.push(inner.to_string());
+                    }
+                    let suffix = &after[end + close.len()..];
+                    if !suffix.is_empty() {
+                        cleaned_lines.push(suffix.to_string());
+                    }
+                } else {
+                    // Start multi-line block
+                    in_style_block = true;
+                    let inner = after.trim();
+                    if !inner.is_empty() {
+                        captured_lines.push(inner.to_string());
+                    }
+                }
+            } else {
+                cleaned_lines.push(line);
+            }
         } else {
-            cleaned.push(line);
+            if let Some(end) = trimmed.find(close) {
+                let inner = trimmed[..end].trim();
+                if !inner.is_empty() {
+                    captured_lines.push(inner.to_string());
+                }
+                in_style_block = false;
+                let suffix = &trimmed[end + close.len()..];
+                if !suffix.is_empty() {
+                    cleaned_lines.push(suffix.to_string());
+                }
+            } else {
+                captured_lines.push(line);
+            }
         }
     }
-    let cleaned_s = cleaned
-        .join(
-            "
-",
-        )
-        .trim()
-        .to_string();
-    let captured_s = captured
-        .join(
-            "
-",
-        )
-        .trim()
-        .to_string();
+    let cleaned_s = cleaned_lines.join("\n").trim().to_string();
+    let captured_s = captured_lines.join("\n").trim().to_string();
     let cleaned_opt = if cleaned_s.is_empty() {
         None
     } else {

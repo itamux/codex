@@ -231,7 +231,14 @@ fn merge_after_heading(base: &str, start: usize, end: usize, heading: &str, text
         out.push_str(text);
         out.push('\n');
     }
-    out.push_str(&base[end..]);
+    // Normalize to exactly one blank line before the next section.
+    let mut j = end;
+    let bytes = base.as_bytes();
+    while j < bytes.len() && bytes[j] == b'\n' {
+        j += 1;
+    }
+    out.push('\n');
+    out.push_str(&base[j..]);
     out
 }
 

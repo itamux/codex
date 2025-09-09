@@ -528,10 +528,32 @@ pub fn builtin_style_yaml_by_name(name: &str) -> Option<&'static str> {
 /// Apply a discovered style by name to the running config.
 pub(crate) fn apply_output_style_name_to_config(name: &str, config: &mut Config) {
     if name.eq_ignore_ascii_case("default") {
-        config.user_instructions = None;
+        // Reset to default style; keep any existing non-style user text as-is.
+        // If prior instructions were only a style YAML, clear it; otherwise preserve.
+        if let Some(text) = &config.user_instructions {
+            // Heuristic: if the entire instructions look like a style doc, clear it.
+            if text.contains("kind: codex-style") {
+                config.user_instructions = None;
+            }
+        }
         return;
     }
-    config.user_instructions = builtin_style_yaml_by_name(name).map(|s| s.to_string());
+    if let Some(yaml) = builtin_style_yaml_by_name(name) {
+        match &mut config.user_instructions {
+            Some(existing) if !existing.is_empty() => {
+                if !existing.ends_with('\n') {
+                    existing.push('\n');
+                }
+                existing.push_str("<!-- codex-output-style:\n");
+                existing.push_str(yaml);
+                existing.push_str("\n-->");
+                existing.push('\n');
+            }
+            _ => {
+                config.user_instructions = Some(yaml.to_string());
+            }
+        }
+    }
 }
 
 #[cfg(test)]

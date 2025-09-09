@@ -160,6 +160,9 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
+    pub(crate) fn style_name(&self) -> Option<&str> {
+        self.style_name.as_deref()
+    }
     fn flush_answer_stream_with_separator(&mut self) {
         let sink = AppEventHistorySink(self.app_event_tx.clone());
         let _ = self.stream.finalize(true, &sink);
@@ -1242,10 +1245,11 @@ impl ChatWidget {
     /// Open a popup to choose the output style.
     pub(crate) fn open_output_style_popup(&mut self) {
         let mut items: Vec<SelectionItem> = Vec::new();
-        let current_name = format!("{:?}", self.output_style).to_ascii_lowercase();
+        let current_style_name = self.style_name.as_deref();
         // Default option
         {
-            let is_current = current_name == "default";
+            let is_current = current_style_name.is_none()
+                && self.output_style == crate::cli::OutputStyle::Default;
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 tx.send(AppEvent::UpdateOutputStyle(
                     crate::cli::OutputStyle::Default,
@@ -1264,7 +1268,9 @@ impl ChatWidget {
         names.sort();
         for n in names {
             let label = n.to_string();
-            let is_current = current_name == n;
+            let is_current = current_style_name
+                .map(|s| s.eq_ignore_ascii_case(n))
+                .unwrap_or(false);
             let style_name = label.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 tx.send(AppEvent::UpdateOutputStyleName(style_name.clone()));
@@ -1348,6 +1354,9 @@ impl ChatWidget {
 
     pub(crate) fn set_output_style(&mut self, style: crate::cli::OutputStyle) {
         self.output_style = style;
+        if matches!(style, crate::cli::OutputStyle::Default) {
+            self.style_name = None;
+        }
     }
 
     pub(crate) fn add_mcp_output(&mut self) {

@@ -327,7 +327,7 @@ impl App {
             initial_images: Vec::new(),
             enhanced_keys_supported: self.enhanced_keys_supported,
             output_style: self.output_style,
-            style_name: None,
+            style_name: self.chat_widget.style_name().map(|s| s.to_string()),
         };
         self.chat_widget =
             crate::chatwidget::ChatWidget::new_from_existing(init, conv, session_configured);

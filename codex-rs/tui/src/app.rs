@@ -201,6 +201,7 @@ impl App {
         match event {
             AppEvent::UpdateOutputStyle(style) => {
                 self.chat_widget.set_output_style(style);
+                self.output_style = style;
 
                 // Track a friendly name for display
                 self.style_name = match style {
