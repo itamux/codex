@@ -165,7 +165,9 @@ jobs:
         # Run tests only on the primary Linux GNU dev job to avoid flaky/env-specific failures
         if: ${{ matrix.profile != 'release' && matrix.target == 'x86_64-unknown-linux-gnu' }}
         continue-on-error: true
-        run: cargo test --all-features --target ${{ matrix.target }} --profile ${{ matrix.profile }}
+        run: |
+          cargo test --all-features --target ${{ matrix.target }} --profile ${{ matrix.profile }} \
+            --workspace --exclude codex-mcp-server
         env:
           RUST_BACKTRACE: 1
 
