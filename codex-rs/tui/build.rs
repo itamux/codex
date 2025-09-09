@@ -2,8 +2,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+#[expect(clippy::expect_used)]
 fn main() {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest_dir = PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),
+    );
     let styles_dir = manifest_dir.join("styles");
     println!("cargo:rerun-if-changed={}", styles_dir.display());
 
@@ -21,7 +24,9 @@ fn main() {
                     .to_string();
                 let rel = format!(
                     "../{}",
-                    path.strip_prefix(&manifest_dir).unwrap().to_string_lossy()
+                    path.strip_prefix(&manifest_dir)
+                        .expect("style file under crate root")
+                        .to_string_lossy()
                 );
                 entries.push((name, rel));
             }
@@ -44,6 +49,7 @@ fn main() {
         code.push_str(&line);
     }
 
-    code.push_str("];");
-    fs::write(out_path, code).unwrap();
+    // Close array properly with semicolon and trailing newline.
+    code.push_str("];\n");
+    fs::write(out_path, code).expect("write styles_gen.rs");
 }

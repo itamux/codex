@@ -128,6 +128,8 @@ impl McpProcess {
         .await?;
 
         let initialized = self.read_jsonrpc_message().await?;
+        let expected_server_version = env!("CARGO_PKG_VERSION");
+
         assert_eq!(
             JSONRPCMessage::Response(JSONRPCResponse {
                 jsonrpc: JSONRPC_VERSION.into(),
@@ -141,7 +143,7 @@ impl McpProcess {
                     "serverInfo": {
                         "name": "codex-mcp-server",
                         "title": "Codex",
-                        "version": "0.0.0"
+                        "version": expected_server_version
                     },
                     "protocolVersion": mcp_types::MCP_SCHEMA_VERSION
                 })
