@@ -28,16 +28,12 @@ pub struct RegionSpec {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Mode {
+    #[default]
     Replace,
     Merge,
     Disable,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Replace
-    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -85,7 +81,7 @@ pub fn apply_style_yaml(base: &str, yaml: &str) -> Option<String> {
                 .as_ref()
                 .and_then(|s| s.presentation.as_ref())
                 .and_then(|s| s.heading.clone()),
-            "## Presenting your work && final message",
+            "## Presenting your work and final message",
             &["
 ## "],
         );
@@ -215,9 +211,8 @@ fn replace_range_with(base: &str, start: usize, end: usize, heading: &str, text:
     while j < bytes.len() && bytes[j] == b'\n' {
         j += 1;
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(&base[j..]);
-    out.push_str(&base[end..]);
     out
 }
 
