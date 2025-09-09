@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+#[expect(clippy::expect_used)]
 fn main() {
     // Resolve the crate directory containing this build script. When unavailable
     // (e.g., editor background tasks), fall back to current_dir and avoid panics.
