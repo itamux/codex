@@ -48,7 +48,7 @@ Each archive contains a single entry with the platform baked into the name (e.g.
 
 </details>
 
-### Using Codex with your ChatGPT plan
+### Using Itamux with your ChatGPT plan
 
 <p align="center">
   <img src="./.github/codex-cli-login.png" alt="Codex CLI login" width="80%" />
