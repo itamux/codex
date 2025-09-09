@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   cla:
+    if: ${{ github.event_name != 'pull_request_target' }}
     runs-on: ubuntu-latest
     steps:
       - uses: contributor-assistant/github-action@v2.6.1
