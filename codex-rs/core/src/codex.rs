@@ -2980,9 +2980,10 @@ fn split_style_instructions(user_instructions: Option<String>) -> (Option<String
     };
     // Prefer YAML-based style documents if present.
     if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&text)
-        && val.get("kind").and_then(|k| k.as_str()) == Some("codex-style") {
-            return (None, Some(text));
-        }
+        && val.get("kind").and_then(|k| k.as_str()) == Some("codex-style")
+    {
+        return (None, Some(text));
+    }
     // Back-compat: support old HTML-comment style markers
     let mut cleaned: Vec<&str> = Vec::new();
     let mut captured: Vec<&str> = Vec::new();

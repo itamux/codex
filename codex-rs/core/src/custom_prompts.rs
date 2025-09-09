@@ -440,9 +440,10 @@ pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
             }
             if has_digit {
                 if val > 0
-                    && let Some(s) = args.get(val - 1) {
-                        out.push_str(s);
-                    }
+                    && let Some(s) = args.get(val - 1)
+                {
+                    out.push_str(s);
+                }
                 i += j; // advance past $<digits>
                 continue;
             }
