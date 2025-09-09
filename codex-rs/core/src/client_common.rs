@@ -45,25 +45,24 @@ impl Prompt {
             .unwrap_or(BASE_INSTRUCTIONS);
 
         // Try YAML-based style override first
-        if let Some(extra) = &self.extra_instructions {
-            if let Some(replaced) = apply_style_yaml(base, extra) {
-                let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
-                    OpenAiTool::Function(f) => f.name == "apply_patch",
-                    OpenAiTool::Freeform(f) => f.name == "apply_patch",
-                    _ => false,
-                });
-                let mut sections: Vec<String> = vec![replaced];
-                if self.base_instructions_override.is_none()
-                    && (model.needs_special_apply_patch_instructions
-                        || !is_apply_patch_tool_present)
-                {
-                    sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS.to_string());
-                }
-                return Cow::Owned(sections.join(
-                    "
-",
-                ));
+        if let Some(extra) = &self.extra_instructions
+            && let Some(replaced) = apply_style_yaml(base, extra)
+        {
+            let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
+                OpenAiTool::Function(f) => f.name == "apply_patch",
+                OpenAiTool::Freeform(f) => f.name == "apply_patch",
+                _ => false,
+            });
+            let mut sections: Vec<String> = vec![replaced];
+            if self.base_instructions_override.is_none()
+                && (model.needs_special_apply_patch_instructions || !is_apply_patch_tool_present)
+            {
+                sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS.to_string());
             }
+            return Cow::Owned(sections.join(
+                "
+",
+            ));
         }
 
         // Fallback: base + optional appended extra text (legacy behavior)
@@ -78,10 +77,10 @@ impl Prompt {
         {
             sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS);
         }
-        if let Some(extra) = &self.extra_instructions {
-            if !extra.trim().is_empty() {
-                sections.push(extra);
-            }
+        if let Some(extra) = &self.extra_instructions
+            && !extra.trim().is_empty()
+        {
+            sections.push(extra);
         }
         Cow::Owned(sections.join(
             "
@@ -106,7 +105,7 @@ pub fn debug_full_instructions(style_yaml: &str, model: &ModelFamily) -> String 
         }
         out
     } else {
-        format!("{}\n{}", base, style_yaml)
+        format!("{base}\n{style_yaml}")
     }
 }
 

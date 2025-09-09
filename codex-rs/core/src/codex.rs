@@ -114,6 +114,7 @@ use crate::util::backoff;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::custom_prompts::CustomPrompt;
+use codex_protocol::custom_prompts::CustomPromptMeta;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::LocalShellAction;
@@ -1288,16 +1289,44 @@ async fn submission_loop(
                 let tx_event = sess.tx_event.clone();
                 let sub_id = sub.id.clone();
 
-                let custom_prompts: Vec<CustomPrompt> =
-                    crate::custom_prompts::discover_user_and_project_custom_prompts(
-                        &turn_context.cwd,
-                    )
-                    .await;
-                let custom_prompts_meta =
-                    crate::custom_prompts::discover_user_and_project_custom_prompt_meta(
-                        &turn_context.cwd,
-                    )
-                    .await;
+                // Merge prompts from project > user > builtin (builtins lowest precedence).
+                let mut prompts_by_name: HashMap<String, CustomPrompt> = HashMap::new();
+                for p in crate::custom_prompts::discover_user_and_project_custom_prompts(
+                    &turn_context.cwd,
+                )
+                .await
+                .into_iter()
+                {
+                    prompts_by_name.insert(p.name.clone(), p);
+                }
+                for p in crate::custom_prompts::discover_builtin_custom_prompts()
+                    .await
+                    .into_iter()
+                {
+                    prompts_by_name.entry(p.name.clone()).or_insert(p);
+                }
+                let mut custom_prompts: Vec<CustomPrompt> = prompts_by_name.into_values().collect();
+                custom_prompts.sort_by(|a, b| a.name.cmp(&b.name));
+
+                // Merge meta with same precedence ordering: project > user > builtin
+                let mut meta_by_name: HashMap<String, CustomPromptMeta> = HashMap::new();
+                for m in crate::custom_prompts::discover_user_and_project_custom_prompt_meta(
+                    &turn_context.cwd,
+                )
+                .await
+                .into_iter()
+                {
+                    meta_by_name.insert(m.name.clone(), m);
+                }
+                for m in crate::custom_prompts::discover_builtin_custom_prompt_meta()
+                    .await
+                    .into_iter()
+                {
+                    meta_by_name.entry(m.name.clone()).or_insert(m);
+                }
+                let mut custom_prompts_meta: Vec<CustomPromptMeta> =
+                    meta_by_name.into_values().collect();
+                custom_prompts_meta.sort_by(|a, b| a.name.cmp(&b.name));
 
                 let event = Event {
                     id: sub_id,
@@ -2943,6 +2972,60 @@ fn convert_call_tool_result_to_function_call_output_payload(
     }
 }
 
+/// Extract any embedded output-style instructions from user_instructions and return
+/// (cleaned_user_instructions, style_instructions).
+fn split_style_instructions(user_instructions: Option<String>) -> (Option<String>, Option<String>) {
+    let Some(text) = user_instructions else {
+        return (None, None);
+    };
+    // Prefer YAML-based style documents if present.
+    if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&text)
+        && val.get("kind").and_then(|k| k.as_str()) == Some("codex-style") {
+            return (None, Some(text));
+        }
+    // Back-compat: support old HTML-comment style markers
+    let mut cleaned: Vec<&str> = Vec::new();
+    let mut captured: Vec<&str> = Vec::new();
+    let mut in_style_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("<!-- codex-output-style:") {
+            in_style_block = true;
+            continue;
+        }
+        if in_style_block {
+            captured.push(line);
+        } else {
+            cleaned.push(line);
+        }
+    }
+    let cleaned_s = cleaned
+        .join(
+            "
+",
+        )
+        .trim()
+        .to_string();
+    let captured_s = captured
+        .join(
+            "
+",
+        )
+        .trim()
+        .to_string();
+    let cleaned_opt = if cleaned_s.is_empty() {
+        None
+    } else {
+        Some(cleaned_s)
+    };
+    let captured_opt = if captured_s.is_empty() {
+        None
+    } else {
+        Some(captured_s)
+    };
+    (cleaned_opt, captured_opt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3112,59 +3195,4 @@ mod tests {
 
         assert_eq!(expected, got);
     }
-}
-
-/// Extract any embedded output-style instructions from user_instructions and return
-/// (cleaned_user_instructions, style_instructions).
-fn split_style_instructions(user_instructions: Option<String>) -> (Option<String>, Option<String>) {
-    let Some(text) = user_instructions else {
-        return (None, None);
-    };
-    // Prefer YAML-based style documents if present.
-    if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
-        if val.get("kind").and_then(|k| k.as_str()) == Some("codex-style") {
-            return (None, Some(text));
-        }
-    }
-    // Back-compat: support old HTML-comment style markers
-    let mut cleaned: Vec<&str> = Vec::new();
-    let mut captured: Vec<&str> = Vec::new();
-    let mut in_style_block = false;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("<!-- codex-output-style:") {
-            in_style_block = true;
-            continue;
-        }
-        if in_style_block {
-            captured.push(line);
-        } else {
-            cleaned.push(line);
-        }
-    }
-    let cleaned_s = cleaned
-        .join(
-            "
-",
-        )
-        .trim()
-        .to_string();
-    let captured_s = captured
-        .join(
-            "
-",
-        )
-        .trim()
-        .to_string();
-    let cleaned_opt = if cleaned_s.is_empty() {
-        None
-    } else {
-        Some(cleaned_s)
-    };
-    let captured_opt = if captured_s.is_empty() {
-        None
-    } else {
-        Some(captured_s)
-    };
-    (cleaned_opt, captured_opt)
 }

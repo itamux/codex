@@ -11,19 +11,19 @@ fn main() {
     if let Ok(rd) = fs::read_dir(&styles_dir) {
         for ent in rd.flatten() {
             let path = ent.path();
-            if let Some(ext) = path.extension() {
-                if ext == "yaml" || ext == "yml" {
-                    let name = path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let rel = format!(
-                        "../{}",
-                        path.strip_prefix(&manifest_dir).unwrap().to_string_lossy()
-                    );
-                    entries.push((name, rel));
-                }
+            if let Some(ext) = path.extension()
+                && (ext == "yaml" || ext == "yml")
+            {
+                let name = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let rel = format!(
+                    "../{}",
+                    path.strip_prefix(&manifest_dir).unwrap().to_string_lossy()
+                );
+                entries.push((name, rel));
             }
         }
     }
@@ -40,7 +40,7 @@ fn main() {
 ",
     );
     for (name, rel) in entries {
-        let line = format!("    (\"{}\", include_str!(\"{}\")),\n", name, rel);
+        let line = format!("    (\"{name}\", include_str!(\"{rel}\")),\n");
         code.push_str(&line);
     }
 
