@@ -348,49 +348,60 @@ fn validate_or_default_model(model: Option<&String>, path: &Path) -> Option<Stri
 /// - `$n` is replaced by the nth (1-based) positional argument from `args`,
 ///   or an empty string if missing.
 pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
-    let mut out = String::with_capacity(content.len().saturating_add(rest.len()));
-    let bytes = content.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] != b'$' {
-            out.push(bytes[i] as char);
-            i += 1;
-            continue;
-        }
+    // Extra headroom for the optional "\n\nArguments: " prefix
+    let mut out =
+        String::with_capacity(content.len().saturating_add(rest.len()).saturating_add(12));
+    let mut expanded = false;
+    let mut last = 0usize; // byte index, always at char boundary
 
-        // Handle $ARGUMENTS
-        if i + 10 <= bytes.len() && &content[i..i + 10] == "$ARGUMENTS" {
+    // Scan for '$' on valid UTF-8 boundaries
+    while let Some(off) = content[last..].find('$') {
+        let i = last + off; // absolute byte index at '$'
+        // Push preceding slice verbatim
+        out.push_str(&content[last..i]);
+
+        // $ARGUMENTS
+        if content[i..].starts_with("$ARGUMENTS") {
             out.push_str(rest);
-            i += 10;
+            expanded = true;
+            last = i + 10;
             continue;
         }
 
-        // Handle $<digits>
-        let mut j = i + 1; // skip '$'
-        let mut val: usize = 0;
-        let mut has_digit = false;
-        while j < bytes.len() && bytes[j].is_ascii_digit() {
-            has_digit = true;
-            val = val
-                .saturating_mul(10)
-                .saturating_add((bytes[j] - b'0') as usize);
-            j += 1;
+        // $<digits>
+        let mut j = i + 1;
+        for ch in content[j..].chars() {
+            if ch.is_ascii_digit() {
+                j += ch.len_utf8();
+            } else {
+                break;
+            }
         }
-        if has_digit {
-            // 1-based index; missing indices expand to empty string.
+        if j > i + 1 {
+            // Safe to parse: only ASCII digits were consumed
+            let val: usize = content[i + 1..j].parse().unwrap_or(0);
             if val > 0 {
-                let idx = val - 1;
-                if let Some(s) = args.get(idx) {
+                if let Some(s) = args.get(val - 1) {
                     out.push_str(s);
                 }
+                // Count numeric placeholders as expansions even if missing -> expanded to ""
+                expanded = true;
             }
-            i = j;
+            last = j;
             continue;
         }
 
-        // Not a recognized placeholder – treat '$' as a literal.
+        // Not a recognized placeholder – emit literal '$'
         out.push('$');
-        i += 1;
+        last = i + 1;
+    }
+
+    // Tail
+    out.push_str(&content[last..]);
+
+    if !expanded && !rest.trim().is_empty() {
+        out.push_str("\n\nArguments: ");
+        out.push_str(rest);
     }
     out
 }
@@ -779,6 +790,35 @@ mod tests {
         let rest = "line 1\nline 2";
         let expanded = expand_arguments(content, &args, rest);
         assert_eq!(expanded, "Header:\nline 1\nline 2\nTail (pos=A)");
+    }
+
+    #[test]
+    fn expand_arguments_appends_rest_when_no_placeholders() {
+        let content = "Prompt body";
+        let expanded = expand_arguments(content, &[], "extra args");
+        assert_eq!(expanded, "Prompt body\n\nArguments: extra args");
+    }
+
+    #[test]
+    fn expand_arguments_dollar_zero_does_not_suppress_rest() {
+        let content = "Body $0";
+        let expanded = expand_arguments(content, &[], "extra");
+        assert_eq!(expanded, "Body \n\nArguments: extra");
+    }
+
+    #[test]
+    fn expand_arguments_ignores_whitespace_rest() {
+        let content = "Prompt body";
+        let expanded = expand_arguments(content, &[], "   ");
+        assert_eq!(expanded, "Prompt body");
+    }
+
+    #[test]
+    fn expand_arguments_preserves_utf8() {
+        let content = "Привет $1";
+        let args = vec!["мир".to_string()];
+        let expanded = expand_arguments(content, &args, "");
+        assert_eq!(expanded, "Привет мир");
     }
 
     // T005: Frontmatter detection and YAML parsing
