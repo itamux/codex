@@ -3,6 +3,7 @@
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
+use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::Path;
@@ -50,11 +51,11 @@ struct VersionInfo {
 
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
-    tag_name: String,
+    tag_name: Option<String>,
 }
 
 const VERSION_FILENAME: &str = "version.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/itamux/codex/releases/latest";
 
 fn version_filepath(config: &Config) -> PathBuf {
     config.codex_home.join(VERSION_FILENAME)
@@ -66,29 +67,41 @@ fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
 }
 
 async fn check_for_update(version_file: &Path, originator: &str) -> anyhow::Result<()> {
-    let ReleaseInfo {
-        tag_name: latest_tag_name,
-    } = create_client(originator)
+    let resp = create_client(originator)
         .get(LATEST_RELEASE_URL)
         .send()
-        .await?
-        .error_for_status()?
-        .json::<ReleaseInfo>()
         .await?;
 
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+
+    let ReleaseInfo {
+        tag_name: latest_tag_name,
+    } = resp.error_for_status()?.json::<ReleaseInfo>().await?;
+
+    let Some(latest_tag_name) = latest_tag_name else {
+        return Ok(());
+    };
+
+    let version = latest_tag_name
+        .strip_prefix("rust-v")
+        .or_else(|| latest_tag_name.strip_prefix('v'))
+        .unwrap_or(latest_tag_name.as_str());
+    anyhow::ensure!(
+        parse_version(version).is_some(),
+        "Failed to parse latest tag name '{latest_tag_name}'",
+    );
     let info = VersionInfo {
-        latest_version: latest_tag_name
-            .strip_prefix("rust-v")
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))?
-            .into(),
+        latest_version: version.to_string(),
         last_checked_at: Utc::now(),
     };
 
-    let json_line = format!("{}\n", serde_json::to_string(&info)?);
+    let json = serde_json::to_vec(&info)?;
     if let Some(parent) = version_file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::write(version_file, json_line).await?;
+    tokio::fs::write(version_file, json).await?;
     Ok(())
 }
 
@@ -110,6 +123,7 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn prerelease_version_is_not_considered_newer() {
@@ -129,5 +143,22 @@ mod tests {
     fn whitespace_is_ignored() {
         assert_eq!(parse_version(" 1.2.3 \n"), Some((1, 2, 3)));
         assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
+    }
+
+    #[test]
+    fn version_tag_prefixes_are_handled() {
+        let tag = "rust-v1.2.3";
+        let version = tag
+            .strip_prefix("rust-v")
+            .or_else(|| tag.strip_prefix('v'))
+            .unwrap_or(tag);
+        assert_eq!(parse_version(version), Some((1, 2, 3)));
+
+        let tag = "v1.2.3";
+        let version = tag
+            .strip_prefix("rust-v")
+            .or_else(|| tag.strip_prefix('v'))
+            .unwrap_or(tag);
+        assert_eq!(parse_version(version), Some((1, 2, 3)));
     }
 }
