@@ -232,13 +232,21 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 } else if let Some(name) = opts.style {
                     match codex_tui::builtin_style_yaml_by_name(&name) {
                         Some(yaml) => {
-                            let mf = match codex_core::model_family::find_family_for_model(&opts.model) {
+                            let mf = match codex_core::model_family::find_family_for_model(
+                                &opts.model,
+                            ) {
                                 Some(m) => m,
-                                None => match codex_core::model_family::find_family_for_model("gpt-4.1") {
-                                    Some(m) => m,
-                                    None => {
-                                        eprintln!("Error: Could not find model family for {} or gpt-4.1", opts.model);
-                                        std::process::exit(1);
+                                None => {
+                                    match codex_core::model_family::find_family_for_model("gpt-4.1")
+                                    {
+                                        Some(m) => m,
+                                        None => {
+                                            eprintln!(
+                                                "Error: Could not find model family for {} or gpt-4.1",
+                                                opts.model
+                                            );
+                                            std::process::exit(1);
+                                        }
                                     }
                                 }
                             };
@@ -295,7 +303,8 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                                 let mut out_s = String::new();
                                 for (key, heading, next) in sections {
                                     if wanted.iter().any(|w| w.eq_ignore_ascii_case(key))
-                                        && let Some((a, b)) = find_range(&full, heading, next) {
+                                        && let Some((a, b)) = find_range(&full, heading, next)
+                                    {
                                         if !out_s.is_empty() {
                                             out_s.push('\n');
                                         }

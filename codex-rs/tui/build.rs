@@ -32,7 +32,9 @@ fn main() {
                     Ok(p) => p.to_string_lossy().to_string(),
                     Err(_) => path.to_string_lossy().to_string(),
                 };
-                let rel = format!("../{rel_inner}");
+                // Normalize path separators to forward slashes for cross-platform compatibility
+                // This ensures the generated include_str! paths work on Windows
+                let rel = format!("../{}", rel_inner.replace('\\', "/"));
                 entries.push((name, rel));
             }
         }
