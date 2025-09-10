@@ -3012,7 +3012,7 @@ fn split_style_instructions(user_instructions: Option<String>) -> (Option<String
                     let suffix = &after[end + close.len()..];
                 // Combine prefix and suffix into a single line to preserve original layout
                 let combined = match (!prefix.is_empty(), !suffix.is_empty()) {
-                    (true, true) => format!("{}{}", prefix, suffix),
+                    (true, true) => format!("{prefix}{suffix}"),
                     (true, false) => prefix.to_string(),
                     (false, true) => suffix.to_string(),
                     (false, false) => String::new(),
