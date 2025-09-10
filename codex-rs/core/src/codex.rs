@@ -3002,9 +3002,6 @@ fn split_style_instructions(user_instructions: Option<String>) -> (Option<String
             if let Some(start) = trimmed.find(open) {
                 // Preserve any prefix before the marker on this line
                 let prefix = &line[..line.find(open).unwrap_or(0)];
-                if !prefix.is_empty() {
-                    cleaned_lines.push(prefix.to_string());
-                }
                 let after = &trimmed[start + open.len()..];
                 if let Some(end) = after.find(close) {
                     // Single-line block
@@ -3013,10 +3010,21 @@ fn split_style_instructions(user_instructions: Option<String>) -> (Option<String
                         captured_lines.push(inner.to_string());
                     }
                     let suffix = &after[end + close.len()..];
-                    if !suffix.is_empty() {
-                        cleaned_lines.push(suffix.to_string());
-                    }
+                // Combine prefix and suffix into a single line to preserve original layout
+                let combined = match (!prefix.is_empty(), !suffix.is_empty()) {
+                    (true, true) => format!("{}{}", prefix, suffix),
+                    (true, false) => prefix.to_string(),
+                    (false, true) => suffix.to_string(),
+                    (false, false) => String::new(),
+                };
+                if !combined.is_empty() {
+                    cleaned_lines.push(combined);
+                }
                 } else {
+                // Start multi-line block - preserve prefix
+                if !prefix.is_empty() {
+                    cleaned_lines.push(prefix.to_string());
+                }
                     // Start multi-line block
                     in_style_block = true;
                     let inner = after.trim();
