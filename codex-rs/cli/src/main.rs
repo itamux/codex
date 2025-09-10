@@ -227,17 +227,21 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     let names: Vec<&'static str> = codex_tui::builtin_style_names().collect();
                     println!("Available styles ({}):", names.len());
                     for n in names {
-                        println!("- {}", n);
+                        println!("- {n}");
                     }
-                } else {
-                    let name = opts.style.unwrap();
+                } else if let Some(name) = opts.style {
                     match codex_tui::builtin_style_yaml_by_name(&name) {
                         Some(yaml) => {
-                            let mf = codex_core::model_family::find_family_for_model(&opts.model)
-                                .unwrap_or_else(|| {
-                                    codex_core::model_family::find_family_for_model("gpt-4.1")
-                                        .unwrap()
-                                });
+                            let mf = match codex_core::model_family::find_family_for_model(&opts.model) {
+                                Some(m) => m,
+                                None => match codex_core::model_family::find_family_for_model("gpt-4.1") {
+                                    Some(m) => m,
+                                    None => {
+                                        eprintln!("Error: Could not find model family for {} or gpt-4.1", opts.model);
+                                        std::process::exit(1);
+                                    }
+                                }
+                            };
                             let full = codex_core::debug_full_instructions(yaml, &mf);
                             if let Some(list) = opts.sections.as_ref() {
                                 let wanted: Vec<&str> = list
@@ -290,22 +294,21 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                                 }
                                 let mut out_s = String::new();
                                 for (key, heading, next) in sections {
-                                    if wanted.iter().any(|w| w.eq_ignore_ascii_case(key)) {
-                                        if let Some((a, b)) = find_range(&full, heading, next) {
-                                            if !out_s.is_empty() {
-                                                out_s.push_str("\n");
-                                            }
-                                            out_s.push_str(&full[a..b]);
+                                    if wanted.iter().any(|w| w.eq_ignore_ascii_case(key))
+                                        && let Some((a, b)) = find_range(&full, heading, next) {
+                                        if !out_s.is_empty() {
+                                            out_s.push('\n');
                                         }
+                                        out_s.push_str(&full[a..b]);
                                     }
                                 }
-                                println!("{}", out_s);
+                                println!("{out_s}");
                             } else {
-                                println!("{}", full);
+                                println!("{full}");
                             }
                         }
                         None => {
-                            eprintln!("Unknown style: {}", name);
+                            eprintln!("Unknown style: {name}");
                             let names: Vec<&'static str> =
                                 codex_tui::builtin_style_names().collect();
                             eprintln!("Available: {}", names.join(", "));
