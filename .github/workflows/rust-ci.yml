@@ -61,8 +61,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      - name: cargo fmt (nightly)
-        run: cargo +nightly fmt -- --check
+      - name: cargo fmt
+        run: cargo fmt -- --config imports_granularity=Item --check
+      - name: Verify codegen for mcp-types
+        run: ./mcp-types/check_lib_rs.py
 
   cargo_shear:
     name: cargo shear
