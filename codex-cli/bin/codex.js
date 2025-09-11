@@ -57,7 +57,7 @@ if (!targetTriple) {
   throw new Error(`Unsupported platform: ${platform} (${arch})`);
 }
 
-const binaryPath = path.join(__dirname, "..", "bin", `codex-${targetTriple}`);
+const binaryPath = path.join(__dirname, `codex-${targetTriple}`);
 
 // Use an asynchronous spawn instead of spawnSync so that Node is able to
 // respond to signals (e.g. Ctrl-C / SIGINT) while the native binary is
