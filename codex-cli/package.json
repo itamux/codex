@@ -13,9 +13,6 @@
     "bin",
     "scripts"
   ],
-  "scripts": {
-    "postinstall": "node scripts/postinstall.js"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/itamux/codex.git"
