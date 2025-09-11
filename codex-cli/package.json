@@ -1,6 +1,6 @@
 {
   "name": "@itamux/codex",
-  "version": "0.0.0-dev",
+  "version": "0.3.4",
   "license": "Apache-2.0",
   "bin": {
     "codex": "bin/codex.js"
@@ -11,7 +11,7 @@
   },
   "files": [
     "bin",
-    "dist"
+    "scripts"
   ],
   "repository": {
     "type": "git",
