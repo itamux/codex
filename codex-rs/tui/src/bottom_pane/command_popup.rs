@@ -299,6 +299,7 @@ fn scope_tag(meta: &CustomPromptMeta) -> String {
     let scope = match meta.scope {
         codex_protocol::custom_prompts::PromptScope::Project => "project",
         codex_protocol::custom_prompts::PromptScope::User => "user",
+        codex_protocol::custom_prompts::PromptScope::Builtin => "builtin",
     };
     if meta.namespace.is_empty() {
         format!("({scope})")

@@ -826,6 +826,7 @@ pub(crate) fn new_status_output(
     config: &Config,
     usage: &TokenUsage,
     session_id: &Option<Uuid>,
+    output_style_name: Option<String>,
 ) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push("/status".magenta().into());
@@ -958,6 +959,9 @@ pub(crate) fn new_status_output(
     let cli_version = crate::version::CODEX_CLI_VERSION;
     lines.push(vec![padded_emoji("💻").into(), "Client".bold()].into());
     lines.push(vec!["  • CLI Version: ".into(), cli_version.into()].into());
+    if let Some(style_name) = output_style_name {
+        lines.push(vec!["  • Output Style: ".into(), style_name.into()].into());
+    }
     lines.push("".into());
 
     // 📊 Token Usage

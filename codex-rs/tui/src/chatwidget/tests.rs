@@ -190,6 +190,8 @@ async fn helpers_are_available_and_do_not_panic() {
         initial_prompt: None,
         initial_images: Vec::new(),
         enhanced_keys_supported: false,
+        output_style: crate::cli::OutputStyle::Default,
+        style_name: None,
     };
     let mut w = ChatWidget::new(init, conversation_manager);
     // Basic construction sanity.
@@ -234,6 +236,8 @@ fn make_chatwidget_manual() -> (
         show_welcome_banner: true,
         queued_user_messages: std::collections::VecDeque::new(),
         suppress_session_configured_redraw: false,
+        output_style: crate::cli::OutputStyle::Default,
+        style_name: None,
     };
     (widget, rx, op_rx)
 }

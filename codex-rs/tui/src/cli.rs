@@ -3,6 +3,19 @@ use codex_common::ApprovalModeCliArg;
 use codex_common::CliConfigOverrides;
 use std::path::PathBuf;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum OutputStyle {
+    /// Default Codex behavior optimized for efficient software engineering tasks.
+    Default,
+    /// Add brief educational insights while keeping work moving.
+    Explanatory,
+    /// Learn-by-doing: ask the user to implement small, targeted pieces with TODO(human).
+    Learning,
+    Checklist,
+    Verbose,
+}
+
 #[derive(Parser, Debug)]
 #[command(version)]
 pub struct Cli {
@@ -87,6 +100,10 @@ pub struct Cli {
     /// Enable web search (off by default). When enabled, the native Responses `web_search` tool is available to the model (no per‑call approval).
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
+
+    /// Choose an output style that tailors the assistant's responses.
+    #[arg(long = "output-style", value_enum, default_value_t = OutputStyle::Default)]
+    pub output_style: OutputStyle,
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,

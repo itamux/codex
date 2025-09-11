@@ -500,6 +500,7 @@ pub fn render_slash_popup_with_meta_for_test(
         let scope = match m.scope {
             PromptScope::Project => "project",
             PromptScope::User => "user",
+            PromptScope::Builtin => "builtin",
         };
         let tag = if m.namespace.is_empty() {
             format!("({scope})")

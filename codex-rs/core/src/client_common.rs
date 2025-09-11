@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::model_family::ModelFamily;
 use crate::openai_tools::OpenAiTool;
 use crate::protocol::TokenUsage;
+use crate::style_override::apply_style_yaml;
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -31,6 +32,9 @@ pub struct Prompt {
 
     /// Optional override for the built-in BASE_INSTRUCTIONS.
     pub base_instructions_override: Option<String>,
+
+    /// Additional instructions appended after the base and any computed sections.
+    pub extra_instructions: Option<String>,
 }
 
 impl Prompt {
@@ -39,11 +43,30 @@ impl Prompt {
             .base_instructions_override
             .as_deref()
             .unwrap_or(BASE_INSTRUCTIONS);
-        let mut sections: Vec<&str> = vec![base];
 
-        // When there are no custom instructions, add apply_patch_tool_instructions if either:
-        // - the model needs special instructions (4.1), or
-        // - there is no apply_patch tool present
+        // Try YAML-based style override first
+        if let Some(extra) = &self.extra_instructions
+            && let Some(replaced) = apply_style_yaml(base, extra)
+        {
+            let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
+                OpenAiTool::Function(f) => f.name == "apply_patch",
+                OpenAiTool::Freeform(f) => f.name == "apply_patch",
+                _ => false,
+            });
+            let mut sections: Vec<String> = vec![replaced];
+            if self.base_instructions_override.is_none()
+                && (model.needs_special_apply_patch_instructions || !is_apply_patch_tool_present)
+            {
+                sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS.to_string());
+            }
+            return Cow::Owned(sections.join(
+                "
+",
+            ));
+        }
+
+        // Fallback: base + optional appended extra text (legacy behavior)
+        let mut sections: Vec<&str> = vec![base];
         let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
             OpenAiTool::Function(f) => f.name == "apply_patch",
             OpenAiTool::Freeform(f) => f.name == "apply_patch",
@@ -54,11 +77,35 @@ impl Prompt {
         {
             sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS);
         }
-        Cow::Owned(sections.join("\n"))
+        if let Some(extra) = &self.extra_instructions
+            && !extra.trim().is_empty()
+        {
+            sections.push(extra);
+        }
+        Cow::Owned(sections.join(
+            "
+",
+        ))
     }
-
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
         self.input.clone()
+    }
+}
+
+/// Render the full instructions for debugging given a style YAML document.
+/// Applies the YAML style replacement to the base prompt and injects
+/// apply_patch helper guidance when appropriate for the model family.
+pub fn debug_full_instructions(style_yaml: &str, model: &ModelFamily) -> String {
+    let base = BASE_INSTRUCTIONS;
+    if let Some(replaced) = apply_style_yaml(base, style_yaml) {
+        let mut out = replaced;
+        if model.needs_special_apply_patch_instructions {
+            out.push('\n');
+            out.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
+        }
+        out
+    } else {
+        format!("{base}\n{style_yaml}")
     }
 }
 
