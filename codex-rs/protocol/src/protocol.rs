@@ -150,7 +150,7 @@ pub enum Op {
 
     /// Request the full in-memory conversation transcript for the current session.
     /// Reply is delivered via `EventMsg::ConversationHistory`.
-    GetHistory,
+    GetPath,
 
     /// Request the list of MCP tools available across all configured servers.
     /// Reply is delivered via `EventMsg::McpListToolsResponse`.
@@ -511,7 +511,7 @@ pub enum EventMsg {
     /// Notification that the agent is shutting down.
     ShutdownComplete,
 
-    ConversationHistory(ConversationHistoryResponseEvent),
+    ConversationPath(ConversationPathResponseEvent),
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -813,9 +813,9 @@ pub struct WebSearchEndEvent {
 /// Response payload for `Op::GetHistory` containing the current session's
 /// in-memory transcript.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
-pub struct ConversationHistoryResponseEvent {
+pub struct ConversationPathResponseEvent {
     pub conversation_id: ConversationId,
-    pub entries: Vec<ResponseItem>,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]

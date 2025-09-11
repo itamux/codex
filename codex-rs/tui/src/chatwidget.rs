@@ -1105,7 +1105,7 @@ impl ChatWidget {
                     self.on_user_message_event(ev);
                 }
             }
-            EventMsg::ConversationHistory(ev) => {
+            EventMsg::ConversationPath(ev) => {
                 self.app_event_tx
                     .send(crate::app_event::AppEvent::ConversationHistory(ev));
             }
