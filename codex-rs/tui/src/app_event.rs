@@ -60,6 +60,12 @@ pub(crate) enum AppEvent {
     /// Update the current sandbox policy in the running app and widget.
     UpdateSandboxPolicy(SandboxPolicy),
 
+    /// Update the current output style (affects base instructions and reasoning visibility).
+    UpdateOutputStyle(crate::cli::OutputStyle),
+
+    /// Update the current output style by name (dynamic YAML style list).
+    UpdateOutputStyleName(String),
+
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationHistoryResponseEvent),
 }

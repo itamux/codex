@@ -57,11 +57,12 @@ jobs:
         working-directory: codex-rs
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.89
+      # Install nightly rustfmt so we can use imports_granularity=Item without warnings
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      - name: cargo fmt
-        run: cargo fmt -- --config imports_granularity=Item --check
+      - name: cargo fmt (nightly)
+        run: cargo +nightly fmt -- --check
 
   # --- CI to validate on different os/targets --------------------------------
   lint_build_test:

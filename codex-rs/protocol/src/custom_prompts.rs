@@ -22,6 +22,8 @@ pub struct CustomPrompt {
 pub enum PromptScope {
     Project,
     User,
+    /// Packaged with the CLI (embedded). Not user- or project-provided.
+    Builtin,
 }
 
 /// Metadata for a discovered custom prompt, enriched with scope and namespace.

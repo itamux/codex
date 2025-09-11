@@ -311,6 +311,66 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
     out
 }
 
+/// Return the repository-scoped built-in prompts root, if available when running
+/// from a source checkout. This resolves to `<repo_root>/assets/builtin-prompts`.
+fn builtin_prompts_root() -> Option<PathBuf> {
+    let core_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = core_dir.parent()?; // codex-rs/
+    let root = repo_root.join("assets/builtin-prompts");
+    if root.exists() { Some(root) } else { None }
+}
+
+/// Discover built-in prompts packaged in the repository under `assets/builtin-prompts`.
+pub async fn discover_builtin_custom_prompts() -> Vec<CustomPrompt> {
+    let Some(root) = builtin_prompts_root() else {
+        return Vec::new();
+    };
+    discover_prompts_recursive(&root)
+        .await
+        .into_iter()
+        .map(|d| CustomPrompt {
+            name: d.name,
+            path: d.path,
+            content: d.content,
+        })
+        .collect()
+}
+
+/// Discover built-in prompt metadata with `PromptScope::Builtin` and namespace taken
+/// from subdirectories under `assets/builtin-prompts`.
+pub async fn discover_builtin_custom_prompt_meta() -> Vec<CustomPromptMeta> {
+    let Some(root) = builtin_prompts_root() else {
+        return Vec::new();
+    };
+    let items = discover_prompts_recursive(&root).await;
+    let mut out: Vec<CustomPromptMeta> = Vec::with_capacity(items.len());
+    for item in items.into_iter() {
+        let (fm, _body) = parse_frontmatter_and_body(&item.content);
+        let description = fm.get("description").cloned();
+        let argument_hint = fm.get("argument_hint").cloned();
+        let model = validate_or_default_model(fm.get("model"), &item.path);
+        let namespace: Vec<String> = if item.rel_dir.as_os_str().is_empty() {
+            Vec::new()
+        } else {
+            item.rel_dir
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect()
+        };
+        out.push(CustomPromptMeta {
+            name: item.name,
+            path: item.path,
+            scope: PromptScope::Builtin,
+            namespace,
+            description,
+            argument_hint,
+            model,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// Return the default model preset ID used when a prompt does not specify a valid model.
 fn default_model_id() -> &'static str {
     "gpt-5-medium"
@@ -349,48 +409,51 @@ fn validate_or_default_model(model: Option<&String>, path: &Path) -> Option<Stri
 ///   or an empty string if missing.
 pub fn expand_arguments(content: &str, args: &[String], rest: &str) -> String {
     let mut out = String::with_capacity(content.len().saturating_add(rest.len()));
-    let bytes = content.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] != b'$' {
-            out.push(bytes[i] as char);
-            i += 1;
-            continue;
-        }
-
-        // Handle $ARGUMENTS
-        if i + 10 <= bytes.len() && &content[i..i + 10] == "$ARGUMENTS" {
+    let mut i: usize = 0; // byte index; always on a char boundary
+    let content_len = content.len();
+    while i < content_len {
+        let tail = &content[i..];
+        // Handle $ARGUMENTS fast-path
+        if tail.starts_with("$ARGUMENTS") {
             out.push_str(rest);
-            i += 10;
+            i += "$ARGUMENTS".len();
             continue;
         }
-
-        // Handle $<digits>
-        let mut j = i + 1; // skip '$'
-        let mut val: usize = 0;
-        let mut has_digit = false;
-        while j < bytes.len() && bytes[j].is_ascii_digit() {
-            has_digit = true;
-            val = val
-                .saturating_mul(10)
-                .saturating_add((bytes[j] - b'0') as usize);
-            j += 1;
-        }
-        if has_digit {
-            // 1-based index; missing indices expand to empty string.
-            if val > 0 {
-                let idx = val - 1;
-                if let Some(s) = args.get(idx) {
+        // Safe next char
+        let mut ch_iter = tail.chars();
+        let ch = match ch_iter.next() {
+            Some(c) => c,
+            None => break,
+        };
+        if ch == '$' {
+            // Parse digits after '$' directly from bytes of tail
+            let tbytes = tail.as_bytes();
+            let mut j: usize = 1; // offset into tail
+            let mut val: usize = 0;
+            let mut has_digit = false;
+            while j < tbytes.len() && tbytes[j].is_ascii_digit() {
+                has_digit = true;
+                val = val
+                    .saturating_mul(10)
+                    .saturating_add((tbytes[j] - b'0') as usize);
+                j += 1;
+            }
+            if has_digit {
+                if val > 0
+                    && let Some(s) = args.get(val - 1)
+                {
                     out.push_str(s);
                 }
+                i += j; // advance past $<digits>
+                continue;
             }
-            i = j;
+            // Not a recognized placeholder – emit '$' literally.
+            out.push('$');
+            i += 1; // '$' is ASCII
             continue;
         }
-
-        // Not a recognized placeholder – treat '$' as a literal.
-        out.push('$');
-        i += 1;
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }

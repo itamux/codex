@@ -114,6 +114,7 @@ use crate::util::backoff;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::custom_prompts::CustomPrompt;
+use codex_protocol::custom_prompts::CustomPromptMeta;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::LocalShellAction;
@@ -297,6 +298,8 @@ pub(crate) struct TurnContext {
     /// instead of `std::env::current_dir()`.
     pub(crate) cwd: PathBuf,
     pub(crate) base_instructions: Option<String>,
+    /// Output style appendage that should be added to the base instructions.
+    pub(crate) style_instructions: Option<String>,
     pub(crate) user_instructions: Option<String>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
@@ -384,7 +387,11 @@ impl Session {
         // - spin up MCP connection manager
         // - perform default shell discovery
         // - load history metadata
-        let rollout_fut = RolloutRecorder::new(&config, session_id, user_instructions.clone());
+        let (clean_user_instructions, style_instructions) =
+            split_style_instructions(user_instructions.clone());
+
+        let rollout_fut =
+            RolloutRecorder::new(&config, session_id, clean_user_instructions.clone());
 
         let mcp_fut = McpConnectionManager::new(config.mcp_servers.clone());
         let default_shell_fut = shell::default_user_shell();
@@ -452,8 +459,9 @@ impl Session {
                 use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
                 include_view_image_tool: config.include_view_image_tool,
             }),
-            user_instructions,
+            user_instructions: clean_user_instructions,
             base_instructions,
+            style_instructions,
             approval_policy,
             sandbox_policy,
             shell_environment_policy: config.shell_environment_policy.clone(),
@@ -1108,6 +1116,7 @@ async fn submission_loop(
                     tools_config,
                     user_instructions: prev.user_instructions.clone(),
                     base_instructions: prev.base_instructions.clone(),
+                    style_instructions: prev.style_instructions.clone(),
                     approval_policy: new_approval_policy,
                     sandbox_policy: new_sandbox_policy.clone(),
                     shell_environment_policy: prev.shell_environment_policy.clone(),
@@ -1189,6 +1198,7 @@ async fn submission_loop(
                         }),
                         user_instructions: turn_context.user_instructions.clone(),
                         base_instructions: turn_context.base_instructions.clone(),
+                        style_instructions: turn_context.style_instructions.clone(),
                         approval_policy,
                         sandbox_policy,
                         shell_environment_policy: turn_context.shell_environment_policy.clone(),
@@ -1279,16 +1289,44 @@ async fn submission_loop(
                 let tx_event = sess.tx_event.clone();
                 let sub_id = sub.id.clone();
 
-                let custom_prompts: Vec<CustomPrompt> =
-                    crate::custom_prompts::discover_user_and_project_custom_prompts(
-                        &turn_context.cwd,
-                    )
-                    .await;
-                let custom_prompts_meta =
-                    crate::custom_prompts::discover_user_and_project_custom_prompt_meta(
-                        &turn_context.cwd,
-                    )
-                    .await;
+                // Merge prompts from project > user > builtin (builtins lowest precedence).
+                let mut prompts_by_name: HashMap<String, CustomPrompt> = HashMap::new();
+                for p in crate::custom_prompts::discover_user_and_project_custom_prompts(
+                    &turn_context.cwd,
+                )
+                .await
+                .into_iter()
+                {
+                    prompts_by_name.insert(p.name.clone(), p);
+                }
+                for p in crate::custom_prompts::discover_builtin_custom_prompts()
+                    .await
+                    .into_iter()
+                {
+                    prompts_by_name.entry(p.name.clone()).or_insert(p);
+                }
+                let mut custom_prompts: Vec<CustomPrompt> = prompts_by_name.into_values().collect();
+                custom_prompts.sort_by(|a, b| a.name.cmp(&b.name));
+
+                // Merge meta with same precedence ordering: project > user > builtin
+                let mut meta_by_name: HashMap<String, CustomPromptMeta> = HashMap::new();
+                for m in crate::custom_prompts::discover_user_and_project_custom_prompt_meta(
+                    &turn_context.cwd,
+                )
+                .await
+                .into_iter()
+                {
+                    meta_by_name.insert(m.name.clone(), m);
+                }
+                for m in crate::custom_prompts::discover_builtin_custom_prompt_meta()
+                    .await
+                    .into_iter()
+                {
+                    meta_by_name.entry(m.name.clone()).or_insert(m);
+                }
+                let mut custom_prompts_meta: Vec<CustomPromptMeta> =
+                    meta_by_name.into_values().collect();
+                custom_prompts_meta.sort_by(|a, b| a.name.cmp(&b.name));
 
                 let event = Event {
                     id: sub_id,
@@ -1635,6 +1673,7 @@ async fn run_turn(
         input,
         tools,
         base_instructions_override: turn_context.base_instructions.clone(),
+        extra_instructions: turn_context.style_instructions.clone(),
     };
 
     let mut retries = 0;
@@ -1888,6 +1927,7 @@ async fn run_compact_task(
         input: turn_input,
         tools: Vec::new(),
         base_instructions_override: Some(compact_instructions.clone()),
+        extra_instructions: turn_context.style_instructions.clone(),
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
@@ -2930,6 +2970,98 @@ fn convert_call_tool_result_to_function_call_output_payload(
         content,
         success: Some(is_success),
     }
+}
+
+/// Extract any embedded output-style instructions from user_instructions and return
+/// (cleaned_user_instructions, style_instructions).
+fn split_style_instructions(user_instructions: Option<String>) -> (Option<String>, Option<String>) {
+    let Some(text) = user_instructions else {
+        return (None, None);
+    };
+    // Prefer YAML-based style documents if present.
+    if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&text)
+        && val.get("kind").and_then(|k| k.as_str()) == Some("codex-style")
+        && val.get("version").and_then(|v| v.as_i64()).is_some()
+    {
+        return (None, Some(text));
+    }
+    // Back-compat: support old HTML-comment style markers (single-line and multi-line):
+    //   <!-- codex-output-style: ... -->
+    //   <!-- codex-output-style:
+    //      ...
+    //   -->
+    let mut cleaned_lines: Vec<String> = Vec::new();
+    let mut captured_lines: Vec<String> = Vec::new();
+    let mut in_style_block = false;
+    let open = "<!-- codex-output-style:";
+    let close = "-->";
+    for raw in text.lines() {
+        let line = raw.to_string();
+        let trimmed = line.trim_start();
+        if !in_style_block {
+            if let Some(start) = trimmed.find(open) {
+                // Preserve any prefix before the marker on this line
+                let prefix = &line[..line.find(open).unwrap_or(0)];
+                let after = &trimmed[start + open.len()..];
+                if let Some(end) = after.find(close) {
+                    // Single-line block
+                    let inner = after[..end].trim();
+                    if !inner.is_empty() {
+                        captured_lines.push(inner.to_string());
+                    }
+                    let suffix = &after[end + close.len()..];
+                    // Combine prefix and suffix into a single line to preserve original layout
+                    let combined = match (!prefix.is_empty(), !suffix.is_empty()) {
+                        (true, true) => format!("{prefix}{suffix}"),
+                        (true, false) => prefix.to_string(),
+                        (false, true) => suffix.to_string(),
+                        (false, false) => String::new(),
+                    };
+                    if !combined.is_empty() {
+                        cleaned_lines.push(combined);
+                    }
+                } else {
+                    // Start multi-line block - preserve prefix
+                    if !prefix.is_empty() {
+                        cleaned_lines.push(prefix.to_string());
+                    }
+                    // Start multi-line block
+                    in_style_block = true;
+                    let inner = after.trim();
+                    if !inner.is_empty() {
+                        captured_lines.push(inner.to_string());
+                    }
+                }
+            } else {
+                cleaned_lines.push(line);
+            }
+        } else if let Some(end) = trimmed.find(close) {
+            let inner = trimmed[..end].trim();
+            if !inner.is_empty() {
+                captured_lines.push(inner.to_string());
+            }
+            in_style_block = false;
+            let suffix = &trimmed[end + close.len()..];
+            if !suffix.is_empty() {
+                cleaned_lines.push(suffix.to_string());
+            }
+        } else {
+            captured_lines.push(line.clone());
+        }
+    }
+    let cleaned_s = cleaned_lines.join("\n").trim().to_string();
+    let captured_s = captured_lines.join("\n").trim().to_string();
+    let cleaned_opt = if cleaned_s.is_empty() {
+        None
+    } else {
+        Some(cleaned_s)
+    };
+    let captured_opt = if captured_s.is_empty() {
+        None
+    } else {
+        Some(captured_s)
+    };
+    (cleaned_opt, captured_opt)
 }
 
 #[cfg(test)]

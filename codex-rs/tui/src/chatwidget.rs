@@ -101,6 +101,8 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) initial_prompt: Option<String>,
     pub(crate) initial_images: Vec<PathBuf>,
     pub(crate) enhanced_keys_supported: bool,
+    pub(crate) output_style: crate::cli::OutputStyle,
+    pub(crate) style_name: Option<String>,
 }
 
 pub(crate) struct ChatWidget {
@@ -131,6 +133,8 @@ pub(crate) struct ChatWidget {
     suppress_session_configured_redraw: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    output_style: crate::cli::OutputStyle,
+    style_name: Option<String>,
 }
 
 struct UserMessage {
@@ -156,6 +160,9 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
+    pub(crate) fn style_name(&self) -> Option<&str> {
+        self.style_name.as_deref()
+    }
     fn flush_answer_stream_with_separator(&mut self) {
         let sink = AppEventHistorySink(self.app_event_tx.clone());
         let _ = self.stream.finalize(true, &sink);
@@ -637,6 +644,8 @@ impl ChatWidget {
             initial_prompt,
             initial_images,
             enhanced_keys_supported,
+            output_style,
+            style_name,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -672,6 +681,8 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
             suppress_session_configured_redraw: false,
+            output_style,
+            style_name,
         }
     }
 
@@ -688,6 +699,8 @@ impl ChatWidget {
             initial_prompt,
             initial_images,
             enhanced_keys_supported,
+            output_style,
+            style_name,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -725,6 +738,8 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
+            output_style,
+            style_name,
         }
     }
 
@@ -844,6 +859,9 @@ impl ChatWidget {
             }
             SlashCommand::Model => {
                 self.open_model_popup();
+            }
+            SlashCommand::OutputStyle => {
+                self.open_output_style_popup();
             }
             SlashCommand::Approvals => {
                 self.open_approvals_popup();
@@ -1165,6 +1183,13 @@ impl ChatWidget {
             &self.config,
             &self.total_token_usage,
             &self.session_id,
+            self.style_name.clone().or_else(|| {
+                if self.output_style == crate::cli::OutputStyle::Default {
+                    None
+                } else {
+                    Some(format!("{:?}", self.output_style).to_ascii_lowercase())
+                }
+            }),
         ));
     }
 
@@ -1212,6 +1237,55 @@ impl ChatWidget {
         self.bottom_pane.show_selection_view(
             "Select model and reasoning level".to_string(),
             Some("Switch between OpenAI models for this and future Codex CLI session".to_string()),
+            Some("Press Enter to confirm or Esc to go back".to_string()),
+            items,
+        );
+    }
+
+    /// Open a popup to choose the output style.
+    pub(crate) fn open_output_style_popup(&mut self) {
+        let mut items: Vec<SelectionItem> = Vec::new();
+        let current_style_name = self.style_name.as_deref();
+        // Default option
+        {
+            let is_current = current_style_name.is_none()
+                && self.output_style == crate::cli::OutputStyle::Default;
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::UpdateOutputStyle(
+                    crate::cli::OutputStyle::Default,
+                ));
+                tx.send(AppEvent::NewSession);
+            })];
+            items.push(SelectionItem {
+                name: "Default".to_string(),
+                description: Some("Optimized for efficient coding tasks".to_string()),
+                is_current,
+                actions,
+            });
+        }
+        // Discovered YAML styles
+        let mut names: Vec<&'static str> = crate::builtin_style_names().collect();
+        names.sort();
+        for n in names {
+            let label = n.to_string();
+            let is_current = current_style_name
+                .map(|s| s.eq_ignore_ascii_case(n))
+                .unwrap_or(false);
+            let style_name = label.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::UpdateOutputStyleName(style_name.clone()));
+                tx.send(AppEvent::NewSession);
+            })];
+            items.push(SelectionItem {
+                name: label,
+                description: None,
+                is_current,
+                actions,
+            });
+        }
+        self.bottom_pane.show_selection_view(
+            "Select Output Style".to_string(),
+            Some("Switch how the assistant structures responses".to_string()),
             Some("Press Enter to confirm or Esc to go back".to_string()),
             items,
         );
@@ -1276,6 +1350,13 @@ impl ChatWidget {
     /// Set the model in the widget's config copy.
     pub(crate) fn set_model(&mut self, model: String) {
         self.config.model = model;
+    }
+
+    pub(crate) fn set_output_style(&mut self, style: crate::cli::OutputStyle) {
+        self.output_style = style;
+        if matches!(style, crate::cli::OutputStyle::Default) {
+            self.style_name = None;
+        }
     }
 
     pub(crate) fn add_mcp_output(&mut self) {
