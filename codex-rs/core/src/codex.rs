@@ -104,6 +104,7 @@ use crate::protocol::TaskCompleteEvent;
 use crate::protocol::TurnDiffEvent;
 use crate::protocol::WebSearchBeginEvent;
 use crate::rollout::RolloutRecorder;
+use crate::rollout::RolloutRecorderParams;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_command_safety;
 use crate::safety::assess_safety_for_untrusted_command;

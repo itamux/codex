@@ -1183,7 +1183,7 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_status_output(
             &self.config,
             &self.total_token_usage,
-            &self.conversation_id,
+            &self.session_id,
             self.style_name.clone().or_else(|| {
                 if self.output_style == crate::cli::OutputStyle::Default {
                     None

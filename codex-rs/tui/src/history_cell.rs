@@ -27,6 +27,7 @@ use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
+use codex_protocol::mcp_protocol::ConversationId;
 use codex_protocol::parse_command::ParsedCommand;
 use image::DynamicImage;
 use image::ImageReader;
