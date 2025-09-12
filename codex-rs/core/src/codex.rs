@@ -15,7 +15,8 @@ use async_channel::Sender;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::MaybeApplyPatchVerified;
 use codex_apply_patch::maybe_parse_apply_patch_verified;
-use codex_protocol::protocol::ConversationHistoryResponseEvent;
+use codex_protocol::mcp_protocol::ConversationId;
+use codex_protocol::protocol::ConversationPathResponseEvent;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -44,7 +45,6 @@ use crate::client_common::ResponseEvent;
 use crate::config::Config;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
-use crate::conversation_manager::InitialHistory;
 use crate::custom_prompts::expand_arguments_or_append;
 use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
@@ -89,6 +89,7 @@ use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::FileChange;
+use crate::protocol::InitialHistory;
 use crate::protocol::InputItem;
 use crate::protocol::ListCustomPromptsResponseEvent;
 use crate::protocol::Op;
@@ -150,7 +151,7 @@ pub struct Codex {
 /// unique session id.
 pub struct CodexSpawnOk {
     pub codex: Codex,
-    pub session_id: Uuid,
+    pub conversation_id: ConversationId,
 }
 
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -207,6 +208,7 @@ impl Codex {
             .record_initial_history(&turn_context, conversation_history)
             .await;
         let session_id = session.session_id;
+        let conversation_id = ConversationId::from(session_id);
 
         // This task will run until Op::Shutdown is received.
         tokio::spawn(submission_loop(
@@ -221,7 +223,10 @@ impl Codex {
             rx_event,
         };
 
-        Ok(CodexSpawnOk { codex, session_id })
+        Ok(CodexSpawnOk {
+            codex,
+            conversation_id,
+        })
     }
 
     /// Submit the `op` wrapped in a `Submission` with a unique ID.
@@ -405,7 +410,7 @@ impl Session {
         // - perform default shell discovery
         // - load history metadata
 
-        let rollout_fut = RolloutRecorder::new(&config, rollout_params);
+      let rollout_fut = RolloutRecorder::new(&config, rollout_params);
 
         let mcp_fut = McpConnectionManager::new(config.mcp_servers.clone());
         let default_shell_fut = shell::default_user_shell();
@@ -419,6 +424,7 @@ impl Session {
             error!("failed to initialize rollout recorder: {e:#}");
             anyhow::anyhow!("failed to initialize rollout recorder: {e:#}")
         })?;
+        let rollout_path = rollout_recorder.get_rollout_path();
         // Create the mutable state for the Session.
         let state = State {
             history: ConversationHistory::new(),
@@ -459,7 +465,7 @@ impl Session {
             provider.clone(),
             model_reasoning_effort,
             model_reasoning_summary,
-            session_id,
+            ConversationId::from(session_id),
         );
         let turn_context = TurnContext {
             client,
@@ -472,6 +478,7 @@ impl Session {
                 include_web_search_request: config.tools_web_search_request,
                 use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
                 include_view_image_tool: config.include_view_image_tool,
+                experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
             }),
             user_instructions: clean_user_instructions,
             base_instructions,
@@ -498,17 +505,44 @@ impl Session {
         // If resuming, include converted initial messages in the payload so UIs can render them immediately.
         let initial_messages = match &initial_history {
             InitialHistory::New => None,
-            InitialHistory::Resumed(items) => Some(sess.build_initial_messages(items)),
+            InitialHistory::Resumed(resumed) => Some(
+                sess.build_initial_messages(
+                    &resumed
+                        .history
+                        .iter()
+                        .filter_map(|ri| match ri {
+                            codex_protocol::protocol::RolloutItem::ResponseItem(item) => {
+                                Some(item.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<ResponseItem>>(),
+                ),
+            ),
+            InitialHistory::Forked(items) => Some(
+                sess.build_initial_messages(
+                    &items
+                        .iter()
+                        .filter_map(|ri| match ri {
+                            codex_protocol::protocol::RolloutItem::ResponseItem(item) => {
+                                Some(item.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<ResponseItem>>(),
+                ),
+            ),
         };
 
         let events = std::iter::once(Event {
             id: INITIAL_SUBMIT_ID.to_owned(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id,
+                session_id: ConversationId::from(session_id),
                 model,
                 history_log_id,
                 history_entry_count,
                 initial_messages,
+                rollout_path,
             }),
         })
         .chain(post_session_configured_error_events.into_iter());
@@ -547,7 +581,30 @@ impl Session {
             InitialHistory::New => {
                 self.record_initial_history_new(turn_context).await;
             }
-            InitialHistory::Resumed(items) => {
+            InitialHistory::Resumed(resumed) => {
+                // Convert rollout items to response items
+                let items: Vec<ResponseItem> = resumed
+                    .history
+                    .iter()
+                    .filter_map(|ri| match ri {
+                        codex_protocol::protocol::RolloutItem::ResponseItem(item) => {
+                            Some(item.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                self.record_initial_history_resumed(items).await;
+            }
+            InitialHistory::Forked(items) => {
+                let items: Vec<ResponseItem> = items
+                    .iter()
+                    .filter_map(|ri| match ri {
+                        codex_protocol::protocol::RolloutItem::ResponseItem(item) => {
+                            Some(item.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
                 self.record_initial_history_resumed(items).await;
             }
         }
@@ -687,18 +744,18 @@ impl Session {
     }
 
     async fn record_state_snapshot(&self, items: &[ResponseItem]) {
-        let snapshot = { crate::rollout::SessionStateSnapshot {} };
-
         let recorder = {
             let guard = self.rollout.lock_unchecked();
             guard.as_ref().cloned()
         };
 
         if let Some(rec) = recorder {
-            if let Err(e) = rec.record_state(snapshot).await {
-                error!("failed to record rollout state: {e:#}");
-            }
-            if let Err(e) = rec.record_items(items).await {
+            let rollout_items: Vec<codex_protocol::protocol::RolloutItem> = items
+                .iter()
+                .cloned()
+                .map(codex_protocol::protocol::RolloutItem::ResponseItem)
+                .collect();
+            if let Err(e) = rec.record_items(&rollout_items).await {
                 error!("failed to record rollout items: {e:#}");
             }
         }
@@ -1105,7 +1162,7 @@ async fn submission_loop(
                     provider,
                     effective_effort,
                     effective_summary,
-                    sess.session_id,
+                    ConversationId::from(sess.session_id),
                 );
 
                 let new_approval_policy = approval_policy.unwrap_or(prev.approval_policy);
@@ -1123,6 +1180,7 @@ async fn submission_loop(
                     include_web_search_request: config.tools_web_search_request,
                     use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
                     include_view_image_tool: config.include_view_image_tool,
+                    experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
                 });
 
                 let new_turn_context = TurnContext {
@@ -1194,7 +1252,7 @@ async fn submission_loop(
                         provider,
                         effort,
                         summary,
-                        sess.session_id,
+                        ConversationId::from(sess.session_id),
                     );
 
                     let fresh_turn_context = TurnContext {
@@ -1209,6 +1267,8 @@ async fn submission_loop(
                             use_streamable_shell_tool: config
                                 .use_experimental_streamable_shell_tool,
                             include_view_image_tool: config.include_view_image_tool,
+                            experimental_unified_exec_tool: config
+                                .use_experimental_unified_exec_tool,
                         }),
                         user_instructions: turn_context.user_instructions.clone(),
                         base_instructions: turn_context.base_instructions.clone(),
@@ -1241,7 +1301,12 @@ async fn submission_loop(
                 let id = sess.session_id;
                 let config = config.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = crate::message_history::append_entry(&text, &id, &config).await
+                    if let Err(e) = crate::message_history::append_entry(
+                        &text,
+                        &ConversationId::from(id),
+                        &config,
+                    )
+                    .await
                     {
                         warn!("failed to append to message history: {e}");
                     }
@@ -1269,7 +1334,7 @@ async fn submission_loop(
                                 log_id,
                                 entry: entry_opt.map(|e| {
                                     codex_protocol::message_history::HistoryEntry {
-                                        session_id: e.session_id,
+                                        conversation_id: e.session_id,
                                         ts: e.ts,
                                         text: e.text,
                                     }
@@ -1432,19 +1497,24 @@ async fn submission_loop(
                 }
                 break;
             }
-            Op::GetHistory => {
+            Op::GetPath => {
                 let tx_event = sess.tx_event.clone();
                 let sub_id = sub.id.clone();
-
+                let path = sess
+                    .rollout
+                    .lock_unchecked()
+                    .as_ref()
+                    .map(|r| r.get_rollout_path())
+                    .unwrap_or_default();
                 let event = Event {
                     id: sub_id.clone(),
-                    msg: EventMsg::ConversationHistory(ConversationHistoryResponseEvent {
-                        conversation_id: sess.session_id,
-                        entries: sess.state.lock_unchecked().history.contents(),
+                    msg: EventMsg::ConversationPath(ConversationPathResponseEvent {
+                        conversation_id: ConversationId::from(sess.session_id),
+                        path,
                     }),
                 };
                 if let Err(e) = tx_event.send(event).await {
-                    warn!("failed to send ConversationHistory event: {e}");
+                    warn!("failed to send ConversationPath event: {e}");
                 }
             }
             _ => {
@@ -1858,13 +1928,19 @@ async fn try_run_turn(
                 token_usage,
             } => {
                 if let Some(token_usage) = token_usage {
-                    sess.tx_event
+                    let info = crate::protocol::TokenUsageInfo::new_or_append(
+                        &None,
+                        &Some(token_usage.clone()),
+                        turn_context.client.get_model_context_window(),
+                    );
+                    let evt = crate::protocol::TokenCountEvent { info };
+                    let _ = sess
+                        .tx_event
                         .send(Event {
                             id: sub_id.to_string(),
-                            msg: EventMsg::TokenCount(token_usage),
+                            msg: EventMsg::TokenCount(evt),
                         })
-                        .await
-                        .ok();
+                        .await;
                 }
 
                 let unified_diff = turn_diff_tracker.get_unified_diff();
@@ -2933,15 +3009,20 @@ async fn drain_to_completed(
                 token_usage,
             }) => {
                 // some providers don't return token usage, so we default
-                // TODO: consider approximate token usage
-                let token_usage = token_usage.unwrap_or_default();
-                sess.tx_event
+                let last = token_usage.unwrap_or_default();
+                let info = crate::protocol::TokenUsageInfo::new_or_append(
+                    &None,
+                    &Some(last),
+                    turn_context.client.get_model_context_window(),
+                );
+                let evt = crate::protocol::TokenCountEvent { info };
+                let _ = sess
+                    .tx_event
                     .send(Event {
                         id: sub_id.to_string(),
-                        msg: EventMsg::TokenCount(token_usage),
+                        msg: EventMsg::TokenCount(evt),
                     })
-                    .await
-                    .ok();
+                    .await;
 
                 return Ok(());
             }

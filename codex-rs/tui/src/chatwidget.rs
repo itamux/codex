@@ -29,6 +29,7 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
+use codex_core::protocol::TokenUsageInfo;
 use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::UserMessageEvent;
@@ -85,7 +86,7 @@ use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_file_search::FileMatch;
-use uuid::Uuid;
+use codex_protocol::mcp_protocol::ConversationId;
 
 // Track information about an in-flight exec command.
 struct RunningCommand {
@@ -124,7 +125,7 @@ pub(crate) struct ChatWidget {
     reasoning_buffer: String,
     // Accumulates full reasoning content for transcript-only recording
     full_reasoning_buffer: String,
-    session_id: Option<Uuid>,
+    session_id: Option<ConversationId>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
     show_welcome_banner: bool,
@@ -267,14 +268,10 @@ impl ChatWidget {
         self.maybe_send_next_queued_input();
     }
 
-    fn on_token_count(&mut self, token_usage: TokenUsage) {
-        self.total_token_usage = add_token_usage(&self.total_token_usage, &token_usage);
-        self.last_token_usage = token_usage;
-        self.bottom_pane.set_token_usage(
-            self.total_token_usage.clone(),
-            self.last_token_usage.clone(),
-            self.config.model_context_window,
-        );
+    fn on_token_count(&mut self, info: &TokenUsageInfo) {
+        self.total_token_usage = info.total_token_usage.clone();
+        self.last_token_usage = info.last_token_usage.clone();
+        self.bottom_pane.set_token_usage(Some(info.clone()));
     }
 
     /// Finalize any active exec as failed, push an error message into history,
@@ -1072,7 +1069,11 @@ impl ChatWidget {
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
             EventMsg::TaskStarted(_) => self.on_task_started(),
             EventMsg::TaskComplete(TaskCompleteEvent { .. }) => self.on_task_complete(),
-            EventMsg::TokenCount(token_usage) => self.on_token_count(token_usage),
+            EventMsg::TokenCount(ev) => {
+                if let Some(info) = ev.info.as_ref() {
+                    self.on_token_count(info);
+                }
+            }
             EventMsg::Error(ErrorEvent { message }) => self.on_error(message),
             EventMsg::TurnAborted(ev) => match ev.reason {
                 TurnAbortReason::Interrupted => {
@@ -1113,7 +1114,7 @@ impl ChatWidget {
                     self.on_user_message_event(ev);
                 }
             }
-            EventMsg::ConversationHistory(ev) => {
+            EventMsg::ConversationPath(ev) => {
                 self.app_event_tx
                     .send(crate::app_event::AppEvent::ConversationHistory(ev));
             }
@@ -1374,12 +1375,11 @@ impl ChatWidget {
 
     /// Handle Ctrl-C key press.
     fn on_ctrl_c(&mut self) {
-        if self.bottom_pane.on_ctrl_c() == CancellationEvent::Ignored {
+        if matches!(self.bottom_pane.on_ctrl_c(), CancellationEvent::NotHandled) {
             if self.bottom_pane.is_task_running() {
                 self.submit_op(Op::Interrupt);
-            } else if self.bottom_pane.ctrl_c_quit_hint_visible() {
-                self.submit_op(Op::Shutdown);
             } else {
+                // Show quit hint on first Ctrl‑C; TUI layer handles clearing.
                 self.bottom_pane.show_ctrl_c_quit_hint();
             }
         }
@@ -1448,7 +1448,7 @@ impl ChatWidget {
         &self.total_token_usage
     }
 
-    pub(crate) fn session_id(&self) -> Option<Uuid> {
+    pub(crate) fn session_id(&self) -> Option<ConversationId> {
         self.session_id
     }
 
@@ -1460,11 +1460,12 @@ impl ChatWidget {
 
     pub(crate) fn clear_token_usage(&mut self) {
         self.total_token_usage = TokenUsage::default();
-        self.bottom_pane.set_token_usage(
-            self.total_token_usage.clone(),
-            self.last_token_usage.clone(),
-            self.config.model_context_window,
-        );
+        self.bottom_pane
+            .set_token_usage(TokenUsageInfo::new_or_append(
+                &None,
+                &Some(self.last_token_usage.clone()),
+                self.config.model_context_window,
+            ));
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -1498,29 +1499,12 @@ const EXAMPLE_PROMPTS: [&str; 6] = [
 ];
 
 fn add_token_usage(current_usage: &TokenUsage, new_usage: &TokenUsage) -> TokenUsage {
-    let cached_input_tokens = match (
-        current_usage.cached_input_tokens,
-        new_usage.cached_input_tokens,
-    ) {
-        (Some(current), Some(new)) => Some(current + new),
-        (Some(current), None) => Some(current),
-        (None, Some(new)) => Some(new),
-        (None, None) => None,
-    };
-    let reasoning_output_tokens = match (
-        current_usage.reasoning_output_tokens,
-        new_usage.reasoning_output_tokens,
-    ) {
-        (Some(current), Some(new)) => Some(current + new),
-        (Some(current), None) => Some(current),
-        (None, Some(new)) => Some(new),
-        (None, None) => None,
-    };
     TokenUsage {
         input_tokens: current_usage.input_tokens + new_usage.input_tokens,
-        cached_input_tokens,
+        cached_input_tokens: current_usage.cached_input_tokens + new_usage.cached_input_tokens,
         output_tokens: current_usage.output_tokens + new_usage.output_tokens,
-        reasoning_output_tokens,
+        reasoning_output_tokens: current_usage.reasoning_output_tokens
+            + new_usage.reasoning_output_tokens,
         total_tokens: current_usage.total_tokens + new_usage.total_tokens,
     }
 }

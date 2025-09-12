@@ -49,7 +49,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
 use unicode_width::UnicodeWidthStr;
-use uuid::Uuid;
+// no uuid dependency needed here
 
 #[derive(Clone, Debug)]
 pub(crate) struct CommandOutput {
@@ -598,13 +598,7 @@ pub(crate) fn new_session_info(
     event: SessionConfiguredEvent,
     is_first_event: bool,
 ) -> PlainHistoryCell {
-    let SessionConfiguredEvent {
-        model,
-        session_id: _,
-        history_log_id: _,
-        history_entry_count: _,
-        initial_messages: _,
-    } = event;
+    let SessionConfiguredEvent { model, .. } = event;
     if is_first_event {
         let cwd_str = match relativize_to_home(&config.cwd) {
             Some(rel) if !rel.as_os_str().is_empty() => {
@@ -966,17 +960,14 @@ pub(crate) fn new_status_output(
 
     // 📊 Token Usage
     lines.push(vec!["📊 ".into(), "Token Usage".bold()].into());
-    if let Some(session_id) = session_id {
-        lines.push(vec!["  • Session ID: ".into(), session_id.to_string().into()].into());
-    }
+    // Session ID omitted from UI for now.
     // Input: <input> [+ <cached> cached]
     let mut input_line_spans: Vec<Span<'static>> = vec![
         "  • Input: ".into(),
         usage.non_cached_input().to_string().into(),
     ];
-    if let Some(cached) = usage.cached_input_tokens
-        && cached > 0
-    {
+    if usage.cached_input_tokens > 0 {
+        let cached = usage.cached_input_tokens;
         input_line_spans.push(format!(" (+ {cached} cached)").into());
     }
     lines.push(Line::from(input_line_spans));
