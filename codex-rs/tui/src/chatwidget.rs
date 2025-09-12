@@ -1498,6 +1498,7 @@ const EXAMPLE_PROMPTS: [&str; 6] = [
     "Improve documentation in @filename",
 ];
 
+#[allow(dead_code)]
 fn add_token_usage(current_usage: &TokenUsage, new_usage: &TokenUsage) -> TokenUsage {
     TokenUsage {
         input_tokens: current_usage.input_tokens + new_usage.input_tokens,

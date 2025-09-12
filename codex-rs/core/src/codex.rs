@@ -387,7 +387,7 @@ impl Session {
         let (clean_user_instructions, style_instructions) =
             split_style_instructions(user_instructions.clone());
 
-        let (conversation_id, rollout_params) = match &initial_history {
+        let (_conversation_id, rollout_params) = match &initial_history {
             InitialHistory::New | InitialHistory::Forked(_) => {
                 let conversation_id = ConversationId::default();
                 (

@@ -820,7 +820,7 @@ pub(crate) fn new_completed_mcp_tool_call(
 pub(crate) fn new_status_output(
     config: &Config,
     usage: &TokenUsage,
-    session_id: &Option<ConversationId>,
+    _session_id: &Option<ConversationId>,
     output_style_name: Option<String>,
 ) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();

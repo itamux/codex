@@ -26,6 +26,7 @@ pub(crate) struct ExecCommandSession {
     wait_handle: StdMutex<Option<JoinHandle<()>>>,
 
     /// Tracks whether the underlying process has exited.
+    #[allow(dead_code)]
     exit_status: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -58,6 +59,7 @@ impl ExecCommandSession {
         self.output_tx.subscribe()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn has_exited(&self) -> bool {
         self.exit_status.load(std::sync::atomic::Ordering::SeqCst)
     }
