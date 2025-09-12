@@ -4,6 +4,19 @@
 
 name: npm-publish
 on:
+  # Manual trigger with version input
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.3.7)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (skip actual publishing)'
+        required: false
+        type: boolean
+        default: false
+  # Automatic trigger after rust-release
   workflow_run:
     workflows: ["rust-release"]
     types:
@@ -16,7 +29,6 @@ concurrency:
 
 jobs:
   publish-npm:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,22 +47,50 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           scope: '@itamux'
 
+      - name: Determine version and trigger type
+        id: determine-version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger
+            VERSION="${{ github.event.inputs.version }}"
+            DRY_RUN="${{ github.event.inputs.dry_run }}"
+            TAG="rust-v$VERSION"
+            echo "Manual trigger - Version: $VERSION, Dry run: $DRY_RUN"
+          elif [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]]; then
+            # Automatic trigger after rust-release
+            TAG="${{ github.event.workflow_run.head_branch }}"
+            if [[ "$TAG" != rust-v* ]]; then
+              echo "Not a rust release tag: $TAG"
+              exit 0
+            fi
+            VERSION="${TAG#rust-v}"
+            DRY_RUN="false"
+            echo "Automatic trigger - Version: $VERSION, Tag: $TAG"
+          else
+            echo "Unsupported trigger type"
+            exit 1
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
+          echo "trigger_type=${{ github.event_name }}" >> $GITHUB_OUTPUT
+
       - name: Download npm artifact from release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           
-          # Get the tag from the workflow run
-          TAG="${{ github.event.workflow_run.head_branch }}"
-          if [[ "$TAG" != rust-v* ]]; then
-            echo "Not a rust release tag: $TAG"
-            exit 0
-          fi
+          VERSION="${{ steps.determine-version.outputs.version }}"
+          TAG="${{ steps.determine-version.outputs.tag }}"
           
-          # Extract version from tag (remove "rust-v" prefix)
-          VERSION="${TAG#rust-v}"
           echo "Version to publish: $VERSION"
+          echo "Release tag: $TAG"
           
           # Download the npm package from the release
           echo "Downloading npm package for version $VERSION..."
@@ -70,21 +110,35 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Publish the npm package
-          echo "Publishing to npm..."
-          npm publish "codex-npm-${{ github.event.workflow_run.head_branch#rust-v }}.tgz" --access public
+          VERSION="${{ steps.determine-version.outputs.version }}"
+          DRY_RUN="${{ steps.determine-version.outputs.dry_run }}"
           
-          echo "Successfully published to npm"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "🧪 Dry run: Would publish to npm..."
+            npm publish "codex-npm-$VERSION.tgz" --dry-run --access public
+            echo "Dry run completed successfully"
+          else
+            echo "Publishing to npm..."
+            npm publish "codex-npm-$VERSION.tgz" --access public
+            echo "Successfully published to npm"
+          fi
 
       - name: Create release comment
-        if: success()
+        if: success() && steps.determine-version.outputs.trigger_type == 'workflow_run'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           
-          TAG="${{ github.event.workflow_run.head_branch }}"
-          VERSION="${TAG#rust-v}"
+          VERSION="${{ steps.determine-version.outputs.version }}"
+          TAG="${{ steps.determine-version.outputs.tag }}"
+          DRY_RUN="${{ steps.determine-version.outputs.dry_run }}"
+          
+          # Only add comment for automatic triggers and non-dry runs
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "Dry run - skipping release comment"
+            exit 0
+          fi
           
           # Find the release and add a comment
           gh release view "$TAG" --json body -q '.body' > release_body.txt
@@ -110,8 +164,9 @@ The npm package \`@itamux/codex@$VERSION\` has been automatically published to n
         run: |
           set -euo pipefail
           
-          TAG="${{ github.event.workflow_run.head_branch }}"
-          VERSION="${TAG#rust-v}"
+          VERSION="${{ steps.determine-version.outputs.version }}"
+          TAG="${{ steps.determine-version.outputs.tag }}"
+          TRIGGER_TYPE="${{ steps.determine-version.outputs.trigger_type }}"
           
           # Create issue for failed publish
           ISSUE_TITLE="❌ NPM Publish Failed: $VERSION"
@@ -120,7 +175,8 @@ The npm package \`@itamux/codex@$VERSION\` has been automatically published to n
 The automated npm publishing workflow failed for version \`$VERSION\`.
 
 **Release Tag:** \`$TAG\`
-**Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
+**Trigger Type:** \`$TRIGGER_TYPE\`
+**Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 **Workflow Log:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 ### Next Steps
