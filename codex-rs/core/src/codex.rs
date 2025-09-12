@@ -411,7 +411,7 @@ impl Session {
         // - perform default shell discovery
         // - load history metadata
 
-      let rollout_fut = RolloutRecorder::new(&config, rollout_params);
+        let rollout_fut = RolloutRecorder::new(&config, rollout_params);
 
         let mcp_fut = McpConnectionManager::new(config.mcp_servers.clone());
         let default_shell_fut = shell::default_user_shell();
