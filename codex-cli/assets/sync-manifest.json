@@ -1,0 +1,11 @@
+{
+  "syncDate": "2025-09-13T10:51:49.367Z",
+  "source": {
+    "prompts": "/home/iatzmon/workspace/codex/codex-rs/assets/builtin-prompts",
+    "styles": "/home/iatzmon/workspace/codex/codex-rs/tui/styles"
+  },
+  "destination": {
+    "prompts": "/home/iatzmon/workspace/codex/codex-cli/assets/builtin-prompts",
+    "styles": "/home/iatzmon/workspace/codex/codex-cli/assets/styles"
+  }
+}

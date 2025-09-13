@@ -11,10 +11,13 @@
   },
   "files": [
     "bin",
-    "scripts"
+    "scripts",
+    "assets"
   ],
   "scripts": {
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "sync-assets": "node scripts/sync-assets.js",
+    "build": "npm run sync-assets"
   },
   "repository": {
     "type": "git",

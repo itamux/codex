@@ -313,7 +313,32 @@ pub async fn discover_user_and_project_custom_prompt_meta(cwd: &Path) -> Vec<Cus
 
 /// Return the repository-scoped built-in prompts root, if available when running
 /// from a source checkout. This resolves to `<repo_root>/assets/builtin-prompts`.
+/// For npm-managed installations, looks for assets relative to the executable.
 fn builtin_prompts_root() -> Option<PathBuf> {
+    // Check if running under npm management
+    if std::env::var_os("CODEX_MANAGED_BY_NPM").is_some() {
+        // When managed by npm, assets are bundled alongside the executable
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                // Look for assets directory relative to the executable
+                // npm package structure: bin/codex-{platform} and assets/builtin-prompts
+                if let Some(package_root) = exe_dir.parent() {
+                    let root = package_root.join("assets/builtin-prompts");
+                    if root.exists() {
+                        return Some(root);
+                    }
+                }
+                // Fallback: assets might be in the same directory as the executable
+                let root = exe_dir.join("assets/builtin-prompts");
+                if root.exists() {
+                    return Some(root);
+                }
+            }
+        }
+        return None;
+    }
+
+    // Original logic for source checkouts
     let core_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = core_dir.parent()?; // codex-rs/
     let root = repo_root.join("assets/builtin-prompts");

@@ -104,7 +104,25 @@ jq --arg version "$VERSION" \
     '.version = $version' \
     package.json > "$TMPDIR/package.json"
 
-# 2. Native runtime deps (sandbox plus optional Rust binaries)
+# 2. Sync built-in assets ----------------------------------------------------
+
+echo "Syncing built-in assets..."
+
+# Copy assets to the staging directory
+mkdir -p "$TMPDIR/assets"
+
+# Sync the latest assets from the Rust codebase
+node scripts/sync-assets.js
+
+# Copy synced assets to staging directory
+if [[ -d "assets" ]]; then
+    cp -r assets/* "$TMPDIR/assets/"
+    echo "✅ Built-in assets synced to staging directory"
+else
+    echo "⚠️  Warning: No assets directory found. Some internal commands may not be available."
+fi
+
+# 3. Native runtime deps (sandbox plus optional Rust binaries)
 
 ./scripts/install_native_deps.sh --workflow-url "$WORKFLOW_URL" "$TMPDIR"
 
