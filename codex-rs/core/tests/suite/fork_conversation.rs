@@ -1,5 +1,4 @@
 use codex_core::CodexAuth;
-use codex_core::ContentItem;
 use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
 use codex_core::NewConversation;
@@ -106,34 +105,25 @@ async fn fork_conversation_twice_drops_to_first_message() {
 
     // Compute expected prefixes after each fork by truncating base rollout at nth-from-last user input.
     let base_items = read_items(&base_path);
-    let find_user_input_positions = |items: &[RolloutItem]| -> Vec<usize> {
-        let mut pos = Vec::new();
-        for (i, it) in items.iter().enumerate() {
-            if let RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. }) = it
-                && role == "user"
-            {
-                // Consider any user message as an input boundary; recorder stores both EventMsg and ResponseItem.
-                // We specifically look for input items, which are represented as ContentItem::InputText.
-                if content
-                    .iter()
-                    .any(|c| matches!(c, ContentItem::InputText { .. }))
-                {
-                    pos.push(i);
-                }
-            }
+
+    // Find indices of user messages in rollout order (matching actual fork_conversation logic).
+    let mut user_positions: Vec<usize> = Vec::new();
+    for (idx, item) in base_items.iter().enumerate() {
+        if let RolloutItem::ResponseItem(ResponseItem::Message { role, .. }) = item
+            && role == "user"
+        {
+            user_positions.push(idx);
         }
-        pos
+    }
+
+    // If fewer than n user messages exist, treat as empty.
+    let expected_after_first = if user_positions.is_empty() {
+        Vec::new()
+    } else {
+        // Cut strictly before the nth-from-last user message (do not keep the nth itself).
+        let cut_idx = user_positions[user_positions.len() - 1];
+        base_items.iter().take(cut_idx).cloned().collect()
     };
-    let user_inputs = find_user_input_positions(&base_items);
-
-    // After dropping last user input (n=1), cut strictly before that input if present, else empty.
-    let cut1 = user_inputs
-        .get(user_inputs.len().saturating_sub(1))
-        .copied()
-        .unwrap_or(0);
-    let expected_after_first: Vec<RolloutItem> = base_items[..cut1].to_vec();
-
-    // After dropping again (n=1 on fork1), compute expected relative to fork1's rollout.
 
     // Fork once with n=1 → drops the last user input and everything after.
     let NewConversation {
@@ -179,14 +169,29 @@ async fn fork_conversation_twice_drops_to_first_message() {
         EventMsg::ConversationPath(ConversationPathResponseEvent { path, .. }) => path.clone(),
         _ => panic!("expected ConversationHistory event after second fork"),
     };
+
     // GetHistory on fork2 flushed; the file is ready.
     let fork1_items = read_items(&fork1_path);
-    let fork1_user_inputs = find_user_input_positions(&fork1_items);
-    let cut_last_on_fork1 = fork1_user_inputs
-        .get(fork1_user_inputs.len().saturating_sub(1))
-        .copied()
-        .unwrap_or(0);
-    let expected_after_second: Vec<RolloutItem> = fork1_items[..cut_last_on_fork1].to_vec();
+
+    // Find indices of user messages in fork1 rollout order (matching actual fork_conversation logic).
+    let mut fork1_user_positions: Vec<usize> = Vec::new();
+    for (idx, item) in fork1_items.iter().enumerate() {
+        if let RolloutItem::ResponseItem(ResponseItem::Message { role, .. }) = item
+            && role == "user"
+        {
+            fork1_user_positions.push(idx);
+        }
+    }
+
+    // If fewer than n user messages exist, treat as empty.
+    let expected_after_second = if fork1_user_positions.is_empty() {
+        Vec::new()
+    } else {
+        // Cut strictly before the nth-from-last user message (do not keep the nth itself).
+        let cut_idx = fork1_user_positions[fork1_user_positions.len() - 1];
+        fork1_items.iter().take(cut_idx).cloned().collect()
+    };
+
     let fork2_items = read_items(&fork2_path);
     pretty_assertions::assert_eq!(
         serde_json::to_value(&fork2_items).unwrap(),

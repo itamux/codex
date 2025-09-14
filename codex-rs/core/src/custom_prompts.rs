@@ -318,21 +318,21 @@ fn builtin_prompts_root() -> Option<PathBuf> {
     // Check if running under npm management
     if std::env::var_os("CODEX_MANAGED_BY_NPM").is_some() {
         // When managed by npm, assets are bundled alongside the executable
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                // Look for assets directory relative to the executable
-                // npm package structure: bin/codex-{platform} and assets/builtin-prompts
-                if let Some(package_root) = exe_dir.parent() {
-                    let root = package_root.join("assets/builtin-prompts");
-                    if root.exists() {
-                        return Some(root);
-                    }
-                }
-                // Fallback: assets might be in the same directory as the executable
-                let root = exe_dir.join("assets/builtin-prompts");
+        if let Ok(exe_path) = std::env::current_exe()
+            && let Some(exe_dir) = exe_path.parent()
+        {
+            // Look for assets directory relative to the executable
+            // npm package structure: bin/codex-{platform} and assets/builtin-prompts
+            if let Some(package_root) = exe_dir.parent() {
+                let root = package_root.join("assets/builtin-prompts");
                 if root.exists() {
                     return Some(root);
                 }
+            }
+            // Fallback: assets might be in the same directory as the executable
+            let root = exe_dir.join("assets/builtin-prompts");
+            if root.exists() {
+                return Some(root);
             }
         }
         return None;

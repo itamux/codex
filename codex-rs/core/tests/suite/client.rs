@@ -238,14 +238,36 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         .await
         .expect("create new conversation");
 
-    // 1) Assert initial_messages only includes existing EventMsg entries; response items are not converted
+    // 1) Assert initial_messages includes converted EventMsg entries from response items
     let initial_msgs = session_configured
         .initial_messages
         .clone()
         .expect("expected initial messages option for resumed session");
     let initial_json = serde_json::to_value(&initial_msgs).unwrap();
-    let expected_initial_json = json!([]);
-    assert_eq!(initial_json, expected_initial_json);
+
+    // Should have user message and assistant message (system message is filtered out)
+    assert_eq!(initial_json.as_array().unwrap().len(), 2);
+
+    // Check that we have the expected message types
+    let has_user_message = initial_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|msg| msg.get("type").and_then(|t| t.as_str()) == Some("user_message"));
+    let has_agent_message = initial_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|msg| msg.get("type").and_then(|t| t.as_str()) == Some("agent_message"));
+
+    assert!(
+        has_user_message,
+        "Expected user_message in initial messages"
+    );
+    assert!(
+        has_agent_message,
+        "Expected agent_message in initial messages"
+    );
 
     // 2) Submit new input; the request body must include the prior item followed by the new user input.
     codex
