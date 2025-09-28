@@ -33,9 +33,10 @@ async fn get_user_agent_returns_current_codex_user_agent() {
     .expect("getUserAgent timeout")
     .expect("getUserAgent response");
 
+    let package_version = env!("CARGO_PKG_VERSION");
     let os_info = os_info::get();
     let user_agent = format!(
-        "codex_cli_rs/0.0.0 ({} {}; {}) {} (elicitation test; 0.0.0)",
+        "codex_cli_rs/{package_version} ({} {}; {}) {} (elicitation test; {package_version})",
         os_info.os_type(),
         os_info.version(),
         os_info.architecture().unwrap_or("unknown"),

@@ -129,6 +129,7 @@ impl McpProcess {
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
+        let client_version = env!("CARGO_PKG_VERSION");
         let params = InitializeRequestParams {
             capabilities: ClientCapabilities {
                 elicitation: Some(json!({})),
@@ -139,7 +140,7 @@ impl McpProcess {
             client_info: Implementation {
                 name: "elicitation test".into(),
                 title: Some("Elicitation Test".into()),
-                version: "0.0.0".into(),
+                version: client_version.into(),
                 user_agent: None,
             },
             protocol_version: mcp_types::MCP_SCHEMA_VERSION.into(),
@@ -156,8 +157,9 @@ impl McpProcess {
 
         let initialized = self.read_jsonrpc_message().await?;
         let os_info = os_info::get();
+        let package_version = env!("CARGO_PKG_VERSION");
         let user_agent = format!(
-            "codex_cli_rs/0.0.0 ({} {}; {}) {} (elicitation test; 0.0.0)",
+            "codex_cli_rs/{package_version} ({} {}; {}) {} (elicitation test; {client_version})",
             os_info.os_type(),
             os_info.version(),
             os_info.architecture().unwrap_or("unknown"),
@@ -176,7 +178,7 @@ impl McpProcess {
                     "serverInfo": {
                         "name": "codex-mcp-server",
                         "title": "Codex",
-                        "version": "0.0.0",
+                        "version": package_version,
                         "user_agent": user_agent
                     },
                     "protocolVersion": mcp_types::MCP_SCHEMA_VERSION
