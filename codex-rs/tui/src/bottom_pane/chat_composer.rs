@@ -1,5 +1,4 @@
 use codex_core::protocol::TokenUsageInfo;
-use codex_protocol::num_format::format_si_suffix;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -25,12 +24,13 @@ use super::chat_composer_history::ChatComposerHistory;
 use super::command_popup::CommandItem;
 use super::command_popup::CommandPopup;
 use super::file_search_popup::FileSearchPopup;
+use super::footer::FooterProps;
+use super::footer::render_footer;
 use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::slash_command::SlashCommand;
 use codex_protocol::custom_prompts::CustomPrompt;
-use codex_slash_commands::parse_command_line;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -38,7 +38,6 @@ use crate::bottom_pane::textarea::TextArea;
 use crate::bottom_pane::textarea::TextAreaState;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
-use crate::key_hint;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use codex_file_search::FileMatch;
 use std::cell::RefCell;
@@ -56,10 +55,7 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 #[derive(Debug, PartialEq)]
 pub enum InputResult {
     Submitted(String),
-    Command {
-        command: SlashCommand,
-        arguments: String,
-    },
+    Command(SlashCommand),
     None,
 }
 
@@ -91,8 +87,6 @@ pub(crate) struct ChatComposer {
     // When true, disables paste-burst logic and inserts characters immediately.
     disable_paste_burst: bool,
     custom_prompts: Vec<CustomPrompt>,
-    #[cfg(feature = "slash_commands")]
-    custom_slash_commands: Vec<crate::slash_command::CustomSlashCommand>,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -113,9 +107,6 @@ impl ChatComposer {
         enhanced_keys_supported: bool,
         placeholder_text: String,
         disable_paste_burst: bool,
-        #[cfg(feature = "slash_commands")] custom_slash_commands: Vec<
-            crate::slash_command::CustomSlashCommand,
-        >,
     ) -> Self {
         let use_shift_enter_hint = enhanced_keys_supported;
 
@@ -139,8 +130,6 @@ impl ChatComposer {
             paste_burst: PasteBurst::default(),
             disable_paste_burst: false,
             custom_prompts: Vec::new(),
-            #[cfg(feature = "slash_commands")]
-            custom_slash_commands,
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -172,8 +161,8 @@ impl ChatComposer {
         // Leave 1 for border and 1 for padding
         textarea_rect.width = textarea_rect.width.saturating_sub(LIVE_PREFIX_COLS);
         textarea_rect.x = textarea_rect.x.saturating_add(LIVE_PREFIX_COLS);
-        let state = self.textarea_state.borrow();
-        self.textarea.cursor_pos_with_state(textarea_rect, &state)
+        let state = *self.textarea_state.borrow();
+        self.textarea.cursor_pos_with_state(textarea_rect, state)
     }
 
     /// Returns true if the composer currently contains no user input.
@@ -275,7 +264,6 @@ impl ChatComposer {
     }
 
     /// Get the current composer text.
-    #[cfg(test)]
     pub(crate) fn current_text(&self) -> String {
         self.textarea.text().to_string()
     }
@@ -412,17 +400,6 @@ impl ChatComposer {
                                 }
                             }
                         }
-                        #[cfg(feature = "slash_commands")]
-                        CommandItem::CustomCommand(idx) => {
-                            if let Some(command) = popup.custom_command(idx) {
-                                let command_prefix = format!("/{}", command.full_name);
-                                let starts_with_cmd =
-                                    first_line.trim_start().starts_with(&command_prefix);
-                                if !starts_with_cmd {
-                                    self.textarea.set_text(&format!("{command_prefix} "));
-                                }
-                            }
-                        }
                     }
                     // After completing the command, move cursor to the end.
                     if !self.textarea.text().is_empty() {
@@ -438,22 +415,13 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(sel) = popup.selected_item() {
-                    let first_line = self
-                        .textarea
-                        .text()
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
+                    // Clear textarea so no residual text remains.
+                    self.textarea.set_text("");
+                    // Capture any needed data from popup before clearing it.
                     let prompt_content = match sel {
                         CommandItem::UserPrompt(idx) => {
-                            popup.prompt_content(idx).map(|s| s.to_string())
+                            popup.prompt_content(idx).map(str::to_string)
                         }
-                        _ => None,
-                    };
-                    #[cfg(feature = "slash_commands")]
-                    let selected_custom_command = match sel {
-                        CommandItem::CustomCommand(idx) => popup.custom_command(idx).cloned(),
                         _ => None,
                     };
                     // Hide popup since an action has been dispatched.
@@ -461,37 +429,11 @@ impl ChatComposer {
 
                     match sel {
                         CommandItem::Builtin(cmd) => {
-                            self.textarea.set_text("");
-                            let arguments = Self::extract_builtin_arguments(&first_line);
-                            return (
-                                InputResult::Command {
-                                    command: cmd,
-                                    arguments,
-                                },
-                                true,
-                            );
+                            return (InputResult::Command(cmd), true);
                         }
                         CommandItem::UserPrompt(_) => {
-                            self.textarea.set_text("");
                             if let Some(contents) = prompt_content {
                                 return (InputResult::Submitted(contents), true);
-                            }
-                            return (InputResult::None, true);
-                        }
-                        #[cfg(feature = "slash_commands")]
-                        CommandItem::CustomCommand(_) => {
-                            if let Some(command) = selected_custom_command {
-                                let trimmed = first_line.trim_start();
-                                let command_prefix = format!("/{}", command.full_name);
-                                if trimmed.starts_with(&command_prefix)
-                                    && trimmed.len() > command_prefix.len()
-                                {
-                                    // Arguments already typed; submit as normal input.
-                                    return self.handle_key_event_without_popup(key_event);
-                                }
-                                self.textarea.set_text(&format!("/{} ", command.full_name));
-                                let end = self.textarea.text().len();
-                                self.textarea.set_cursor(end);
                             }
                             return (InputResult::None, true);
                         }
@@ -607,7 +549,7 @@ impl ChatComposer {
                         let format_label = match Path::new(&sel_path)
                             .extension()
                             .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
+                            .map(str::to_ascii_lowercase)
                         {
                             Some(ext) if ext == "png" => "PNG",
                             Some(ext) if ext == "jpg" || ext == "jpeg" => "JPEG",
@@ -674,7 +616,7 @@ impl ChatComposer {
             text[safe_cursor..]
                 .chars()
                 .next()
-                .map(|c| c.is_whitespace())
+                .map(char::is_whitespace)
                 .unwrap_or(false)
         } else {
             false
@@ -702,7 +644,7 @@ impl ChatComposer {
         let ws_len_right: usize = after_cursor
             .chars()
             .take_while(|c| c.is_whitespace())
-            .map(|c| c.len_utf8())
+            .map(char::len_utf8)
             .sum();
         let start_right = safe_cursor + ws_len_right;
         let end_right_rel = text[start_right..]
@@ -891,17 +833,6 @@ impl ChatComposer {
                 (InputResult::Submitted(text), true)
             }
             input => self.handle_input_basic(input),
-        }
-    }
-
-    fn extract_builtin_arguments(text: &str) -> String {
-        let first_line = text.lines().next().unwrap_or("").trim();
-        if first_line.is_empty() {
-            return String::new();
-        }
-        match parse_command_line(first_line) {
-            Some((_, args)) if !args.is_empty() => args.join(" "),
-            _ => String::new(),
         }
     }
 
@@ -1225,11 +1156,7 @@ impl ChatComposer {
             }
             _ => {
                 if input_starts_with_slash {
-                    let mut command_popup = CommandPopup::new(
-                        self.custom_prompts.clone(),
-                        #[cfg(feature = "slash_commands")]
-                        self.custom_slash_commands.clone(),
-                    );
+                    let mut command_popup = CommandPopup::new(self.custom_prompts.clone());
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                 }
@@ -1241,17 +1168,6 @@ impl ChatComposer {
         self.custom_prompts = prompts.clone();
         if let ActivePopup::Command(popup) = &mut self.active_popup {
             popup.set_prompts(prompts);
-        }
-    }
-
-    #[cfg(feature = "slash_commands")]
-    pub(crate) fn set_custom_slash_commands(
-        &mut self,
-        commands: Vec<crate::slash_command::CustomSlashCommand>,
-    ) {
-        self.custom_slash_commands = commands.clone();
-        if let ActivePopup::Command(popup) = &mut self.active_popup {
-            popup.set_custom_commands(commands);
         }
     }
 
@@ -1347,76 +1263,17 @@ impl WidgetRef for ChatComposer {
                 } else {
                     popup_rect
                 };
-                let mut hint: Vec<Span<'static>> = if self.ctrl_c_quit_hint {
-                    let ctrl_c_followup = if self.is_task_running {
-                        " to interrupt"
-                    } else {
-                        " to quit"
-                    };
-                    vec![
-                        " ".into(),
-                        key_hint::ctrl('C'),
-                        " again".into(),
-                        ctrl_c_followup.into(),
-                    ]
-                } else {
-                    let newline_hint_key = if self.use_shift_enter_hint {
-                        key_hint::shift('⏎')
-                    } else {
-                        key_hint::ctrl('J')
-                    };
-                    vec![
-                        key_hint::plain('⏎'),
-                        " send   ".into(),
-                        newline_hint_key,
-                        " newline   ".into(),
-                        key_hint::ctrl('T'),
-                        " transcript   ".into(),
-                        key_hint::ctrl('C'),
-                        " quit".into(),
-                    ]
-                };
-
-                if !self.ctrl_c_quit_hint && self.esc_backtrack_hint {
-                    hint.push("   ".into());
-                    hint.push(key_hint::plain("Esc"));
-                    hint.push(" edit prev".into());
-                }
-
-                // Append token/context usage info to the footer hints when available.
-                if let Some(token_usage_info) = &self.token_usage_info {
-                    let token_usage = &token_usage_info.total_token_usage;
-                    hint.push("   ".into());
-                    hint.push(
-                        Span::from(format!(
-                            "{} tokens used",
-                            format_si_suffix(token_usage.blended_total())
-                        ))
-                        .style(Style::default().add_modifier(Modifier::DIM)),
-                    );
-                    let last_token_usage = &token_usage_info.last_token_usage;
-                    if let Some(context_window) = token_usage_info.model_context_window {
-                        let percent_remaining: u8 = if context_window > 0 {
-                            last_token_usage.percent_of_context_window_remaining(context_window)
-                        } else {
-                            100
-                        };
-                        let context_style = if percent_remaining < 20 {
-                            Style::default().fg(Color::Yellow)
-                        } else {
-                            Style::default().add_modifier(Modifier::DIM)
-                        };
-                        hint.push("   ".into());
-                        hint.push(Span::styled(
-                            format!("{percent_remaining}% context left"),
-                            context_style,
-                        ));
-                    }
-                }
-
-                Line::from(hint)
-                    .style(Style::default().dim())
-                    .render_ref(hint_rect, buf);
+                render_footer(
+                    hint_rect,
+                    buf,
+                    FooterProps {
+                        ctrl_c_quit_hint: self.ctrl_c_quit_hint,
+                        is_task_running: self.is_task_running,
+                        esc_backtrack_hint: self.esc_backtrack_hint,
+                        use_shift_enter_hint: self.use_shift_enter_hint,
+                        token_usage_info: self.token_usage_info.as_ref(),
+                    },
+                );
             }
         }
         let border_style = if self.has_focus {
@@ -1440,9 +1297,8 @@ impl WidgetRef for ChatComposer {
         let mut state = self.textarea_state.borrow_mut();
         StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
         if self.textarea.text().is_empty() {
-            Line::from(self.placeholder_text.as_str())
-                .style(Style::default().dim())
-                .render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
+            let placeholder = Span::from(self.placeholder_text.as_str()).dim();
+            Line::from(vec![placeholder]).render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
         }
     }
 }
@@ -1469,7 +1325,7 @@ mod tests {
     fn footer_hint_row_is_separated_from_composer() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let composer = make_chat_composer(
+        let composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1676,7 +1532,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1705,7 +1561,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1732,7 +1588,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1767,7 +1623,7 @@ mod tests {
         let large = "y".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1);
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1808,7 +1664,7 @@ mod tests {
 
         for (name, input) in test_cases {
             // Create a fresh composer for each test case
-            let mut composer = make_chat_composer(
+            let mut composer = ChatComposer::new(
                 true,
                 sender.clone(),
                 false,
@@ -1851,7 +1707,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
 
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1879,7 +1735,7 @@ mod tests {
         use super::super::command_popup::CommandItem;
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1895,10 +1751,6 @@ mod tests {
                 }
                 Some(CommandItem::UserPrompt(_)) => {
                     panic!("unexpected prompt selected for '/mo'")
-                }
-                #[cfg(feature = "slash_commands")]
-                Some(CommandItem::CustomCommand(_)) => {
-                    panic!("unexpected custom command selected for '/mo'")
                 }
                 None => panic!("no selected command for '/mo'"),
             },
@@ -1918,41 +1770,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "slash_commands")]
-    fn make_chat_composer(
-        has_focus: bool,
-        sender: AppEventSender,
-        enhanced_keys_supported: bool,
-        placeholder: String,
-        disable_paste_burst: bool,
-    ) -> ChatComposer {
-        ChatComposer::new(
-            has_focus,
-            sender,
-            enhanced_keys_supported,
-            placeholder,
-            disable_paste_burst,
-            Vec::new(),
-        )
-    }
-
-    #[cfg(not(feature = "slash_commands"))]
-    fn make_chat_composer(
-        has_focus: bool,
-        sender: AppEventSender,
-        enhanced_keys_supported: bool,
-        placeholder: String,
-        disable_paste_burst: bool,
-    ) -> ChatComposer {
-        ChatComposer::new(
-            has_focus,
-            sender,
-            enhanced_keys_supported,
-            placeholder,
-            disable_paste_burst,
-        )
-    }
-
     #[test]
     fn slash_init_dispatches_command_and_does_not_submit_literal_text() {
         use crossterm::event::KeyCode;
@@ -1961,7 +1778,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -1979,9 +1796,8 @@ mod tests {
         // When a slash command is dispatched, the composer should return a
         // Command result (not submit literal text) and clear its textarea.
         match result {
-            InputResult::Command { command, arguments } => {
-                assert_eq!(command.command(), "init");
-                assert!(arguments.is_empty());
+            InputResult::Command(cmd) => {
+                assert_eq!(cmd.command(), "init");
             }
             InputResult::Submitted(text) => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
@@ -1999,7 +1815,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2024,7 +1840,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2038,9 +1854,8 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::Command { command, arguments } => {
-                assert_eq!(command.command(), "mention");
-                assert!(arguments.is_empty());
+            InputResult::Command(cmd) => {
+                assert_eq!(cmd.command(), "mention");
             }
             InputResult::Submitted(text) => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
@@ -2060,7 +1875,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2139,7 +1954,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2211,7 +2026,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2259,7 +2074,7 @@ mod tests {
     fn attach_image_and_submit_includes_image_paths() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2283,7 +2098,7 @@ mod tests {
     fn attach_image_without_text_submits_empty_text_and_images() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2308,7 +2123,7 @@ mod tests {
     fn image_placeholder_backspace_behaves_like_text_placeholder() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2349,7 +2164,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2375,7 +2190,7 @@ mod tests {
     fn deleting_one_of_duplicate_image_placeholders_removes_matching_entry() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2422,7 +2237,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2444,7 +2259,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2478,7 +2293,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2522,7 +2337,7 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,
@@ -2554,7 +2369,7 @@ mod tests {
     fn humanlike_typing_1000_chars_appears_live_no_placeholder() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
-        let mut composer = make_chat_composer(
+        let mut composer = ChatComposer::new(
             true,
             sender,
             false,

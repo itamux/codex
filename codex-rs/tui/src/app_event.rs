@@ -1,10 +1,10 @@
+use std::path::PathBuf;
+
 use codex_core::protocol::ConversationPathResponseEvent;
 use codex_core::protocol::Event;
 use codex_file_search::FileMatch;
 
 use crate::history_cell::HistoryCell;
-#[cfg(feature = "slash_commands")]
-use crate::slash_command::CustomSlashCommand;
 
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
@@ -68,8 +68,12 @@ pub(crate) enum AppEvent {
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationPathResponseEvent),
 
-    #[cfg(feature = "slash_commands")]
-    CustomSlashCommandsReloaded {
-        commands: Vec<CustomSlashCommand>,
-    },
+    /// Open the branch picker option from the review popup.
+    OpenReviewBranchPicker(PathBuf),
+
+    /// Open the commit picker option from the review popup.
+    OpenReviewCommitPicker(PathBuf),
+
+    /// Open the custom prompt option from the review popup.
+    OpenReviewCustomPrompt,
 }
