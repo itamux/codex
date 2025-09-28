@@ -1,3 +1,4 @@
+use codex_core::protocol::SlashCommandListEntry;
 use codex_core::protocol::TokenUsageInfo;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -87,6 +88,7 @@ pub(crate) struct ChatComposer {
     // When true, disables paste-burst logic and inserts characters immediately.
     disable_paste_burst: bool,
     custom_prompts: Vec<CustomPrompt>,
+    slash_commands: Vec<SlashCommandListEntry>,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -130,6 +132,7 @@ impl ChatComposer {
             paste_burst: PasteBurst::default(),
             disable_paste_burst: false,
             custom_prompts: Vec::new(),
+            slash_commands: Vec::new(),
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -391,6 +394,16 @@ impl ChatComposer {
                                 self.textarea.set_text(&format!("/{} ", cmd.command()));
                             }
                         }
+                        CommandItem::CustomCommand(idx) => {
+                            if let Some(entry) = popup.slash_command(idx) {
+                                let starts_with_cmd = first_line
+                                    .trim_start()
+                                    .starts_with(&format!("/{}", entry.full_name));
+                                if !starts_with_cmd {
+                                    self.textarea.set_text(&format!("/{} ", entry.full_name));
+                                }
+                            }
+                        }
                         CommandItem::UserPrompt(idx) => {
                             if let Some(name) = popup.prompt_name(idx) {
                                 let starts_with_cmd =
@@ -424,12 +437,24 @@ impl ChatComposer {
                         }
                         _ => None,
                     };
+                    let slash_invocation = match sel {
+                        CommandItem::CustomCommand(idx) => popup
+                            .slash_command(idx)
+                            .map(|entry| format!("/{}", entry.full_name)),
+                        _ => None,
+                    };
                     // Hide popup since an action has been dispatched.
                     self.active_popup = ActivePopup::None;
 
                     match sel {
                         CommandItem::Builtin(cmd) => {
                             return (InputResult::Command(cmd), true);
+                        }
+                        CommandItem::CustomCommand(_) => {
+                            if let Some(invocation) = slash_invocation {
+                                return (InputResult::Submitted(invocation), true);
+                            }
+                            return (InputResult::None, true);
                         }
                         CommandItem::UserPrompt(_) => {
                             if let Some(contents) = prompt_content {
@@ -1156,7 +1181,8 @@ impl ChatComposer {
             }
             _ => {
                 if input_starts_with_slash {
-                    let mut command_popup = CommandPopup::new(self.custom_prompts.clone());
+                    let mut command_popup =
+                        CommandPopup::new(self.custom_prompts.clone(), self.slash_commands.clone());
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                 }
@@ -1168,6 +1194,13 @@ impl ChatComposer {
         self.custom_prompts = prompts.clone();
         if let ActivePopup::Command(popup) = &mut self.active_popup {
             popup.set_prompts(prompts);
+        }
+    }
+
+    pub(crate) fn set_slash_commands(&mut self, commands: Vec<SlashCommandListEntry>) {
+        self.slash_commands = commands.clone();
+        if let ActivePopup::Command(popup) = &mut self.active_popup {
+            popup.set_slash_commands(commands);
         }
     }
 
@@ -1748,6 +1781,9 @@ mod tests {
             ActivePopup::Command(popup) => match popup.selected_item() {
                 Some(CommandItem::Builtin(cmd)) => {
                     assert_eq!(cmd.command(), "model")
+                }
+                Some(CommandItem::CustomCommand(_)) => {
+                    panic!("unexpected custom command selected for '/mo'")
                 }
                 Some(CommandItem::UserPrompt(_)) => {
                     panic!("unexpected prompt selected for '/mo'")

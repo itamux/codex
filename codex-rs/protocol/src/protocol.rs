@@ -169,6 +169,10 @@ pub enum Op {
     /// Request the list of available custom prompts.
     ListCustomPrompts,
 
+    /// Request the list of slash commands available to the agent.
+    /// Reply is delivered via `EventMsg::ListSlashCommandsResponse`.
+    ListSlashCommands,
+
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
@@ -507,6 +511,9 @@ pub enum EventMsg {
 
     /// List of custom prompts available to the agent.
     ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
+
+    /// List of slash commands available to the agent.
+    ListSlashCommandsResponse(ListSlashCommandsResponseEvent),
 
     PlanUpdate(UpdatePlanArgs),
 
@@ -1180,6 +1187,20 @@ pub struct McpListToolsResponseEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct ListCustomPromptsResponseEvent {
     pub custom_prompts: Vec<CustomPrompt>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SlashCommandListEntry {
+    pub scope: String,
+    pub qualified_name: String,
+    pub full_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct ListSlashCommandsResponseEvent {
+    pub commands: Vec<SlashCommandListEntry>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, TS)]

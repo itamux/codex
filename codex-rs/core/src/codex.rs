@@ -95,6 +95,7 @@ use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::FileChange;
 use crate::protocol::InputItem;
 use crate::protocol::ListCustomPromptsResponseEvent;
+use crate::protocol::ListSlashCommandsResponseEvent;
 use crate::protocol::Op;
 use crate::protocol::PatchApplyBeginEvent;
 use crate::protocol::PatchApplyEndEvent;
@@ -103,6 +104,7 @@ use crate::protocol::ReviewDecision;
 use crate::protocol::ReviewOutputEvent;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
+use crate::protocol::SlashCommandListEntry;
 use crate::protocol::StreamErrorEvent;
 use crate::protocol::Submission;
 use crate::protocol::TokenCountEvent;
@@ -1176,6 +1178,28 @@ async fn submission_loop(
                                 1 => "Reloaded 1 slash command".to_string(),
                                 _ => format!("Reloaded {count} slash commands"),
                             };
+
+                            let command_entries: Vec<SlashCommandListEntry> = service
+                                .list_commands()
+                                .await
+                                .into_iter()
+                                .map(|command| SlashCommandListEntry {
+                                    scope: command.scope.as_str().to_string(),
+                                    qualified_name: command.qualified_name(),
+                                    full_name: command.full_name(),
+                                    description: command.metadata.description,
+                                })
+                                .collect();
+                            let event = Event {
+                                id: sub.id.clone(),
+                                msg: EventMsg::ListSlashCommandsResponse(
+                                    ListSlashCommandsResponseEvent {
+                                        commands: command_entries,
+                                    },
+                                ),
+                            };
+                            sess.send_event(event).await;
+
                             sess.notify_background_event(&sub.id, message).await;
                         }
                         Err(err) => {
@@ -1286,6 +1310,7 @@ async fn submission_loop(
                 }
             }
             Op::UserInput { items } => {
+                #[allow(unused_mut)]
                 let mut items = items;
                 #[cfg(feature = "slash_commands")]
                 let mut slash_model_override: Option<String> = None;
@@ -1560,6 +1585,37 @@ async fn submission_loop(
                     id: sub_id,
                     msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
                         custom_prompts,
+                    }),
+                };
+                sess.send_event(event).await;
+            }
+            Op::ListSlashCommands => {
+                let sub_id = sub.id.clone();
+
+                #[cfg(feature = "slash_commands")]
+                let command_entries: Vec<SlashCommandListEntry> =
+                    if let Some(service) = sess.services.slash_commands.as_ref() {
+                        service
+                            .list_commands()
+                            .await
+                            .into_iter()
+                            .map(|command| SlashCommandListEntry {
+                                scope: command.scope.as_str().to_string(),
+                                qualified_name: command.qualified_name(),
+                                full_name: command.full_name(),
+                                description: command.metadata.description,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                #[cfg(not(feature = "slash_commands"))]
+                let command_entries: Vec<SlashCommandListEntry> = Vec::new();
+
+                let event = Event {
+                    id: sub_id,
+                    msg: EventMsg::ListSlashCommandsResponse(ListSlashCommandsResponseEvent {
+                        commands: command_entries,
                     }),
                 };
                 sess.send_event(event).await;
